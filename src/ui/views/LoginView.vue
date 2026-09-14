@@ -6,9 +6,12 @@ import type { ServiceConfig } from '../../settings/service'
 import AppIcon from '../components/AppIcon.vue'
 import ServiceSummary from '../components/ServiceSummary.vue'
 import InputFeedback from '../components/InputFeedback.vue'
+import FetcherMark from '../components/FetcherMark.vue'
 
 const props = defineProps<{ service: ServiceConfig | null; busy: boolean; error: string }>()
 const emit = defineEmits<{ configure: []; login: [username: string, password: string, remember: boolean] }>()
+const logoHovered = ref(false)
+const logoFocused = ref(false)
 const showPassword = ref(false)
 const username = ref('')
 const password = ref('')
@@ -80,10 +83,14 @@ async function submit() {
 <template>
   <section class="page-view login-view" aria-labelledby="login-title">
     <div class="login-intro">
-      <img class="login-logo" src="/asynctest-logo.svg" alt="" width="44" height="37" />
+      <span class="login-logo" tabindex="0" role="img" aria-label="NexoFolio 图标"
+        @pointerenter="$event.pointerType !== 'touch' && (logoHovered = true)" @pointerleave="logoHovered = false" @pointercancel="logoHovered = false"
+        @focus="logoFocused = ($event.target as HTMLElement).matches(':focus-visible')" @blur="logoFocused = false">
+        <FetcherMark icon-only :active="logoHovered || logoFocused" />
+      </span>
       <div class="login-heading">
-        <h1 id="login-title" tabindex="-1">登录 AsyncTest</h1>
-        <p class="description">使用你的 AsyncTest 账号</p>
+        <h1 id="login-title" tabindex="-1">登录 NexoFolio</h1>
+        <p class="description">使用你的 NexoFolio 账号</p>
       </div>
     </div>
 
@@ -111,7 +118,7 @@ async function submit() {
       </div>
       <p v-if="formError || preferenceError" class="login-form-error" role="alert">{{ formError || preferenceError }}</p>
       <button class="button primary" type="submit" :disabled="busy || preferenceBusy || !service">{{ busy ? '正在登录…' : '登录' }}<AppIcon name="arrowRight" /></button>
-      <p v-if="!service" class="form-note">请先配置 AsyncTest 服务。</p>
+      <p v-if="!service" class="form-note">请先配置 NexoFolio 服务。</p>
     </form>
 
     <ServiceSummary :service="service" @configure="$emit('configure')" />

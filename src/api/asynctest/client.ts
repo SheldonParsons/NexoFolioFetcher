@@ -49,13 +49,13 @@ export class AsyncTestClient {
           : response.status === 429 ? '尝试次数过多，请稍后再试。'
           : response.status === 403 ? '当前账号没有访问权限。'
           : response.status === 404 ? '没有找到接口，请检查后端服务地址及路径前缀。'
-          : 'AsyncTest 服务暂时不可用，请稍后重试。'
+          : 'NexoFolio 服务暂时不可用，请稍后重试。'
         throw new ApiError('server', message, response.status)
       }
       return payload
     } catch (error) {
       if (error instanceof ApiError) throw error
-      throw new ApiError('network', controller.signal.aborted ? '连接超时，请稍后重试。' : '无法连接 AsyncTest，请检查网络与服务地址。')
+      throw new ApiError('network', controller.signal.aborted ? '连接超时，请稍后重试。' : '无法连接 NexoFolio，请检查网络与服务地址。')
     } finally { clearTimeout(timer) } // Deadline includes body consumption.
   }
 }

@@ -7,7 +7,7 @@ export const SERVICE_STORAGE_KEY = 'asynctest.service.v1'
 
 export function normalizeServiceUrl(input: string): string {
   const value = input.trim()
-  if (!value) throw new Error('请输入 AsyncTest 服务地址。')
+  if (!value) throw new Error('请输入 NexoFolio 服务地址。')
   if (!/^https?:\/\//i.test(value)) throw new Error('地址需要以 https:// 或 http:// 开头。')
   if (/\s/.test(value)) throw new Error('地址中不能包含空格。')
 

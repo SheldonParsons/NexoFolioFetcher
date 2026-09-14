@@ -51,7 +51,7 @@ export function useAuth(events: { onLoginSuccess?: (state: AuthState) => void } 
 
   async function login(username: string, password: string, remember: boolean) {
     const service = state.value.service
-    if (!service) { error.value = '请先配置 AsyncTest 服务。'; return false }
+    if (!service) { error.value = '请先配置 NexoFolio 服务。'; return false }
     if (!username.trim() || !password) { error.value = '请输入账号和密码。'; return false }
     if (busy.value) return false
     // 必须直接从用户点击发起；不能先 await 后再请求 Chrome 权限。

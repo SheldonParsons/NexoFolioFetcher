@@ -37,7 +37,8 @@ watch(state, next => {
   if (arrival.value && (!next.user || next.sessionId !== arrival.value.sessionId || next.service?.url !== arrival.value.serviceUrl)) arrival.value = null
   if (page.value === 'settings') return
   if (next.user) page.value = 'account'
-  else if (page.value === 'account' || next.reason === 'expired') page.value = 'login'
+  else if (next.reason === 'expired') page.value = 'login'
+  else if (page.value === 'account') page.value = 'welcome'
 })
 
 function navigate(target: Page) {
@@ -84,7 +85,7 @@ async function login(username: string, password: string, remember: boolean) {
 async function logout() {
   arrival.value = null
   if (transitioning.value) return
-  if (await auth.logout()) page.value = 'login'
+  if (await auth.logout()) page.value = 'welcome'
 }
 
 async function finishArrival(runId: number) {
@@ -117,7 +118,7 @@ onBeforeUnmount(() => { arrival.value = null; ++arrivalSequence })
       </Transition>
     </main>
     <AccountFooter v-if="page === 'account' && state.user" :state="state" :busy="busy" :inert="!!arrival" @configure="navigate('settings')" @logout="logout" />
-    <footer v-else class="app-footer"><span><i></i>ASYNCTEST FETCHER</span><span>v0.1.0</span></footer>
+    <footer v-else class="app-footer"><span><i></i>NEXOFOLIO FETCHER</span><span>v0.1.0</span></footer>
     <SaveNotice v-model:open="noticeOpen" />
     <LoginSuccessTransition v-if="arrival" :key="arrival.runId" :run-id="arrival.runId" @complete="finishArrival" />
   </div>

@@ -54,7 +54,7 @@ onBeforeUnmount(() => { disposed = true; ++revision; clearTimeout(timer) })
     <Label for="project-search">已加入的项目</Label>
     <input id="project-search" v-model="search" class="project-search" :disabled="disabled" placeholder="搜索项目" autocomplete="off" @input="searchChanged" />
     <ListboxRoot v-if="projects.length" :model-value="selected" :disabled="disabled || loading" selection-behavior="replace" @update:model-value="choose">
-      <ListboxContent class="project-list" aria-label="选择 AsyncTest 项目" :aria-busy="loading">
+      <ListboxContent class="project-list" aria-label="选择 NexoFolio 项目" :aria-busy="loading">
         <ListboxItem v-for="project in projects" :key="project.id" class="project-option" :value="String(project.id)">
           <span class="project-option-name">{{ project.name }}</span>
           <ListboxItemIndicator class="project-selected-mark"><AppIcon name="check" :size="14" /></ListboxItemIndicator>

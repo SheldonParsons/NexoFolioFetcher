@@ -1,6 +1,6 @@
 {
-  "name": "asynctest-fetcher",
-  "description": "AsyncTest Fetcher Chrome panel",
+  "name": "nexofolio-fetcher",
+  "description": "NexoFolio Fetcher Chrome panel",
   "private": true,
   "version": "0.1.0",
   "type": "module",

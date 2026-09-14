@@ -15,7 +15,7 @@ export const AUTH_ENDPOINTS = {
 
 function dataFrom(payload: unknown): Record<string, unknown> {
   const envelope = object(payload)
-  if (Number(envelope.result) !== 1) throw new ApiError('protocol', 'AsyncTest 未返回成功结果。')
+  if (Number(envelope.result) !== 1) throw new ApiError('protocol', 'NexoFolio 未返回成功结果。')
   return object(envelope.data)
 }
 

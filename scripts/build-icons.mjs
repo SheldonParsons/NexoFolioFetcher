@@ -4,7 +4,7 @@ import sharp from 'sharp'
 // Chrome manifest icons require raster assets. Keep the supplied SVG unchanged.
 await mkdir(new URL('../public/icons/', import.meta.url), { recursive: true })
 for (const size of [16, 32, 48, 128]) {
-  await sharp(new URL('../public/logo.svg', import.meta.url).pathname, { density: 384 })
+  await sharp(new URL('../public/nexofolio-icon.svg', import.meta.url).pathname, { density: 384 })
     .resize(size, size, { fit: 'contain', background: '#ffffff00' })
     .png()
     .toFile(new URL(`../public/icons/${size}.png`, import.meta.url).pathname)

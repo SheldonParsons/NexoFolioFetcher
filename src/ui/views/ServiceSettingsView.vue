@@ -35,7 +35,7 @@ function submit() {
       </div>
       <div class="field">
         <Label for="service-url">后端服务地址</Label>
-        <input id="service-url" ref="urlInput" v-model="url" :disabled="saving" type="text" inputmode="url" autocomplete="url" spellcheck="false" autocapitalize="none" placeholder="https://asynctest.example.com" :aria-invalid="!!validationError" aria-required="true" :aria-describedby="validationError ? 'url-error' : undefined" @input="validationError = ''" />
+        <input id="service-url" ref="urlInput" v-model="url" :disabled="saving" type="text" inputmode="url" autocomplete="url" spellcheck="false" autocapitalize="none" placeholder="https://service.example.com" :aria-invalid="!!validationError" aria-required="true" :aria-describedby="validationError ? 'url-error' : undefined" @input="validationError = ''" />
         <p v-if="validationError" id="url-error" class="field-error" role="alert">{{ validationError }}</p>
       </div>
       <p v-if="saveError" class="field-error" role="alert">{{ saveError }}</p>

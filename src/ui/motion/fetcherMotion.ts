@@ -1,115 +1,42 @@
-// Visual source: approved login-clear-spectrum-motion.html, 2026-09-09.
-// Only the green bar receives the spectrum; the two black bars stay opaque black.
-export const FETCHER_MOTION = { amplitude: 6, period: 2200, flowPeriod: 5600, glow: 0.24, settle: 260, enter: 160 } as const
-type Pose = { x: number; y: number }
-type Elements = {
-  root: HTMLElement
-  parts: SVGGElement[]
-  sheen: SVGRectElement
-  gradient: SVGLinearGradientElement
-  aura: HTMLElement
+// Native motion port of MOTION STUDY / 04 (2026-09-14). No preview DOM or dependencies.
+export const DURATION = 3000
+export const SETTLE = 480
+export const clamp = (x: number) => Math.min(1, Math.max(0, x))
+export const smooth = (x: number) => { const t = clamp(x); return t * t * (3 - 2 * t) }
+const ease = (t: number, a: number, b: number) => 1 - Math.pow(1 - clamp((t - a) / (b - a)), 3)
+const spectrum = ['70DDB7','80CDF2','B0A2F2','DDA7E8','F5ABC0','F8C68F','E6DD8D'].map(hex => [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16)))
+export function colors(ms: number) {
+  return [0, 1, 2, 3, 4].map(stop => {
+    const x = (((ms / 5600 + stop * .11) % 1 + 1) % 1) * spectrum.length
+    const i = Math.floor(x), f = smooth(x - i)
+    return `rgb(${spectrum[i]!.map((v, c) => Math.round(v + (spectrum[(i + 1) % spectrum.length]![c]! - v) * f)).join(',')})`
+  })
 }
-const vectors = [[-.454, .891], [.454, .891], [.454, .891]] as const
-const smooth = (value: number) => { const t = Math.max(0, Math.min(1, value)); return t * t * (3 - 2 * t) }
-const mix = (from: number, to: number, t: number) => from + (to - from) * t
-
-export function createFetcherMotion(elements: Elements, initiallyReduced: boolean) {
-  let phase: 'idle' | 'playing' | 'settling' = 'idle'
-  let frame: number | null = null
-  let disposed = false
-  let reduced = initiallyReduced
-  let phaseOrigin = 0
-  let changedAt = 0
-  let strength = 0
-  let shift = 0
-  let rotation = 0
-  let poses: Pose[] = vectors.map(() => ({ x: 0, y: 0 }))
-  let initial = { strength, shift, rotation, poses: poses.map(p => ({ ...p })) }
-
-  function paint() {
-    elements.root.dataset.motion = phase
-    elements.parts.forEach((part, i) => { const pose = poses[i]!; part.setAttribute('transform', `translate(${pose.x.toFixed(3)} ${pose.y.toFixed(3)})`) })
-    elements.sheen.setAttribute('opacity', String(strength))
-    elements.gradient.setAttribute('gradientTransform', `translate(${shift.toFixed(4)} 0)`)
-    elements.aura.style.opacity = String(FETCHER_MOTION.glow * strength)
-    elements.aura.style.transform = `rotate(${rotation.toFixed(2)}deg)`
+const poses = [
+  [0, [0,0,0,1], [0,0,0,1]],
+  [.22, [-12,-9,-2,1.022], [14,10,2.4,1.030]],
+  [.47, [-8,-20,-1.1,1.025], [10,16,1.8,1.010]],
+  [.69, [-10,12,1.2,1.012], [12,-16,-1.6,1.025]],
+  [.86, [-3,-4,-.45,1.004], [4,5,.6,1.006]],
+  [1, [0,0,0,1], [0,0,0,1]],
+] as const
+export function hoverPose(ms: number, amount: number, reduced: boolean) {
+  if (reduced) return ['none', 'none']
+  const phase = (ms % 3600) / 3600
+  const index = Math.max(0, poses.findIndex((p, i) => i < poses.length - 1 && phase >= p[0] && phase < poses[i + 1]![0]))
+  const a = poses[index]!, b = poses[index + 1]!, f = smooth((phase - a[0]) / (b[0] - a[0]))
+  return ([1, 2] as const).map(i => {
+    const p = a[i].map((v, j) => v + (b[i][j]! - v) * f)
+    return `translate(${p[0]! * amount}px,${p[1]! * amount}px) rotate(${p[2]! * amount}deg) scale(${1 + (p[3]! - 1) * amount})`
+  })
+}
+export function arrivalPose(ms: number, reduced: boolean) {
+  const t = clamp(ms / DURATION) * 3, enter = ease(t, .08, 1.03), exit = smooth((t - 2.32) / .68), title = ease(t, .78, 1.38)
+  return {
+    opacity: 1 - exit, scale: 1 - (reduced ? 0 : .035 * exit),
+    leftOpacity: ease(t, .04, .36), rightOpacity: ease(t, .14, .52), wordOpacity: title,
+    left: reduced ? 'none' : `translate(${-92 * (1-enter)}px,${18 * (1-enter)}px) rotate(${-5 * (1-enter)}deg)`,
+    right: reduced ? 'none' : `translate(${105 * (1-enter)}px,${-24 * (1-enter)}px) rotate(${7 * (1-enter)}deg)`,
+    wordY: 530 + (reduced ? 0 : 14 * (1-title)), amount: 1 - smooth((t - 1.12) / .9),
   }
-
-  function stopFrame() {
-    if (frame !== null) cancelAnimationFrame(frame)
-    frame = null
-  }
-
-  function rest() {
-    phase = 'idle'
-    strength = shift = rotation = 0
-    poses = vectors.map(() => ({ x: 0, y: 0 }))
-    stopFrame()
-    paint()
-  }
-
-  function advance(now: number) {
-    if (phase === 'playing') {
-      const t = reduced ? 1 : smooth((now - changedAt) / FETCHER_MOTION.enter)
-      const flow = reduced ? 0 : (now - phaseOrigin) / FETCHER_MOTION.flowPeriod
-      strength = mix(initial.strength, 1, t)
-      shift = mix(initial.shift, .65 * Math.sin(flow * Math.PI * 2), t)
-      rotation = mix(initial.rotation, flow * 55, t)
-      poses = vectors.map((vector, i) => {
-        const wave = reduced ? 0 : Math.sin((now - phaseOrigin) / FETCHER_MOTION.period * Math.PI * 2 - i * 1.3)
-        const from = initial.poses[i]!
-        return { x: mix(from.x, wave * vector[0] * FETCHER_MOTION.amplitude, t), y: mix(from.y, wave * vector[1] * FETCHER_MOTION.amplitude, t) }
-      })
-    } else if (phase === 'settling') {
-      const t = reduced ? 1 : smooth((now - changedAt) / FETCHER_MOTION.settle)
-      strength = initial.strength * (1 - t)
-      poses = initial.poses.map(p => ({ x: p.x * (1 - t), y: p.y * (1 - t) }))
-      if (t === 1) { rest(); return }
-    }
-    paint()
-  }
-
-  function schedule() {
-    if (disposed || frame !== null || phase === 'idle' || reduced) return
-    frame = requestAnimationFrame(now => {
-      frame = null
-      if (disposed) return
-      advance(now)
-      schedule()
-    })
-  }
-
-  function setActive(active: boolean) {
-    if (disposed || (active && phase === 'playing') || (!active && phase !== 'playing')) return
-    const now = performance.now()
-    advance(now) // Re-entry starts at the currently rendered pose, never at a reset pose.
-    initial = { strength, shift, rotation, poses: poses.map(p => ({ ...p })) }
-    if (active && phase === 'idle') phaseOrigin = now
-    changedAt = now
-    phase = active ? 'playing' : 'settling'
-    advance(now)
-    schedule()
-  }
-
-  function setReduced(value: boolean) {
-    if (disposed || value === reduced) return
-    reduced = value
-    if (reduced) {
-      stopFrame()
-      if (phase === 'settling') rest()
-      else if (phase === 'playing') {
-        poses = vectors.map(() => ({ x: 0, y: 0 }))
-        strength = 1
-        shift = rotation = 0
-        paint()
-      }
-    } else if (phase === 'playing') {
-      initial = { strength, shift, rotation, poses: poses.map(p => ({ ...p })) }
-      changedAt = phaseOrigin = performance.now()
-      schedule()
-    }
-  }
-
-  paint()
-  return { setActive, setReduced, dispose() { disposed = true; stopFrame() } }
 }

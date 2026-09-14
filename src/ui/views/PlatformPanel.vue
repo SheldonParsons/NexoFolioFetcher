@@ -264,7 +264,7 @@ onBeforeUnmount(() => {
         <button class="button primary" type="submit" :disabled="busy || loading">{{ busy ? '正在保存…' : '保存名称' }}<AppIcon name="check" :size="16" /></button>
       </form>
       <form v-else-if="step === 'project'" class="platform-form" novalidate @submit.prevent="bind">
-        <div class="platform-section-heading"><h2>绑定 AsyncTest 项目</h2><button type="button" class="inline-button" :disabled="busy || loading" @click="editScope">修改范围</button></div>
+        <div class="platform-section-heading"><h2>绑定 NexoFolio 项目</h2><button type="button" class="inline-button" :disabled="busy || loading" @click="editScope">修改范围</button></div>
         <p class="platform-scope">{{ target.origin }}{{ prefix }}</p>
         <ProjectPicker :key="`${target.tabId}:${target.address}:${prefix}`" :disabled="busy || loading" @select="chosen = $event" />
         <p v-if="context?.rule?.prefix === prefix && context.rule.projects.length" class="platform-hint">添加项目不会覆盖此范围已有的绑定。</p>

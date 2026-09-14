@@ -16,7 +16,7 @@ export class AuthManager {
     const generation = this.generation
     const state = await this.snapshot()
     this.ensureCurrent(generation)
-    if (!state.service || !state.user || state.status !== 'authenticated') throw new ApiError('auth', '请先验证 AsyncTest 登录状态。')
+    if (!state.service || !state.user || state.status !== 'authenticated') throw new ApiError('auth', '请先验证 NexoFolio 登录状态。')
     const session = await readSession(state.service.url)
     if (!session || session.id !== state.sessionId) throw new ApiError('stale', '登录状态已变化，请重试。')
     this.ensureCurrent(generation)
@@ -42,7 +42,7 @@ export class AuthManager {
 
   private async service(expected?: string): Promise<ServiceConfig> {
     const service = await loadService()
-    if (!service) throw new ApiError('input', '请先配置 AsyncTest 服务。')
+    if (!service) throw new ApiError('input', '请先配置 NexoFolio 服务。')
     if (expected && service.url !== expected) throw new ApiError('stale', '服务地址已变化，请重新操作。')
     return service
   }

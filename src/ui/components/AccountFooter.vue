@@ -24,7 +24,7 @@ const platformMenu = inject(platformMenuKey, null)
       <DropdownMenuPortal>
         <DropdownMenuContent class="account-menu" side="top" align="start" :side-offset="12" :collision-padding="16">
           <DropdownMenuLabel class="account-menu-heading">
-            <strong>{{ state.service?.name || 'AsyncTest 服务' }}</strong>
+            <strong>{{ state.service?.name || 'NexoFolio 服务' }}</strong>
             <span>{{ state.service?.url }}</span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator class="account-menu-separator" />
