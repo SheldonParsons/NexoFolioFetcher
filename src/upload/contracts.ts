@@ -48,3 +48,16 @@ export const BATCH_TARGET_BYTES = MAX_BATCH_BYTES / 2
 export const encodedSize = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
 // One batch carries one target: same service, project, environment and site.
 export const groupKey = (value: Destination) => JSON.stringify([value.serviceUrl, value.projectId, value.environment, value.site ?? null])
+
+// F10: a rejected record keeps its code in the queue; people read the reason.
+const REJECTION_REASONS: Record<string, string> = {
+  INVALID_RECORD: '记录格式不正确',
+  RECORD_TOO_LARGE: '记录超过大小上限',
+  UNSUPPORTED_KIND: '接收服务不支持此类记录',
+  UNSUPPORTED_VERSION: '接收服务不支持此记录版本',
+  INVALID_BATCH: '批次格式不正确',
+  UNKNOWN_PROJECT: '绑定的项目不存在或无权访问',
+  UNKNOWN_ENVIRONMENT: '绑定的环境不存在',
+  LEGACY_RECORD: '旧版本插件的记录，无法上传',
+}
+export const rejectionReason = (code?: string) => (code && REJECTION_REASONS[code]) || `未知原因（${code || 'UNKNOWN'}）`

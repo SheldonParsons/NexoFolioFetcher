@@ -3,16 +3,12 @@ import type { InjectionKey, ShallowRef } from 'vue'
 export interface PlatformMenu {
   owner: symbol
   busy: boolean
-  canEditProjects: boolean
+  canEditProject: boolean
   canEditScope: boolean
-  canEditName: boolean
   canEditEnvironment: boolean
-  editEnvironment: () => void
-  canUnbind: boolean
-  editProjects: () => void
+  editProject: () => void
   editScope: () => void
-  editName: () => void
-  unbind: () => void
+  editEnvironment: () => void
 }
 
 // UI-only commands for the active platform panel; each browser panel owns its provider.

@@ -1,5 +1,5 @@
 import { ApiError, object, isUuid } from '../api/nexofolio/client'
-import type { PageTarget, PlatformScope } from './contracts'
+import type { PageTarget } from './contracts'
 import type { PlatformManager } from './manager'
 
 export async function handlePlatformMessage(manager: PlatformManager, message: Record<string, unknown>) {
@@ -17,32 +17,13 @@ export async function handlePlatformMessage(manager: PlatformManager, message: R
     if (!Number.isInteger(message.page) || Number(message.page) < 1 || Number(message.page) > 100000) throw new ApiError('input', '环境页码不正确。')
     return manager.environments(message.projectId, Number(message.page))
   }
-  const value = object(message.target)
-  if (!Number.isInteger(value.tabId) || !Number.isInteger(value.windowId) || typeof value.address !== 'string') throw new ApiError('input', '当前页面信息不完整。')
-  const target = value as unknown as PageTarget
-  if (message.type === 'platform.environment') {
-    if (!isUuid(message.projectId) || typeof message.ruleId !== 'string' || typeof message.environmentName !== 'string') throw new ApiError('input', '环境信息不完整。')
-    return manager.environment(target, message.ruleId, message.projectId, message.environmentName, isUuid(message.environmentId) ? message.environmentId : undefined)
-  }
-  if (message.type === 'platform.rename') {
-    if (typeof message.ruleId !== 'string' || typeof message.name !== 'string') throw new ApiError('input', '平台名称信息不完整。')
-    return manager.rename(target, message.ruleId, message.name)
-  }
-  if (message.type === 'platform.select' || message.type === 'platform.unbind') {
-    if (typeof message.ruleId !== 'string' || !isUuid(message.projectId)) throw new ApiError('input', '绑定信息不完整。')
-    return message.type === 'platform.select' ? manager.select(target, message.ruleId, message.projectId as string) : manager.unbind(target, message.ruleId, message.projectId as string)
-  }
-  const scope = object(message.scope)
-  if (typeof scope.origin !== 'string' || typeof scope.prefix !== 'string') throw new ApiError('input', '授权范围不完整。')
-  const input = scope as unknown as PlatformScope
-  if (message.type === 'platform.authorize') {
-    if (message.name !== undefined && typeof message.name !== 'string') throw new ApiError('input', '平台名称格式不正确。')
-    return manager.authorize(target, input, message.name as string | undefined)
-  }
   if (message.type === 'platform.bind') {
-    const project = object(message.project)
+    const target = object(message.target), scope = object(message.scope), project = object(message.project), environment = object(message.environment)
+    if (!Number.isInteger(target.tabId) || !Number.isInteger(target.windowId) || typeof target.address !== 'string') throw new ApiError('input', '当前页面信息不完整。')
+    if (typeof scope.origin !== 'string' || typeof scope.prefix !== 'string') throw new ApiError('input', '站点范围不完整。')
     if (!isUuid(project.id) || typeof project.name !== 'string') throw new ApiError('input', '请先选择一个可访问项目。')
-    return manager.bind(target, input, { id: project.id as string, name: project.name, environmentName: typeof project.environmentName === 'string' ? project.environmentName : undefined, environmentId: isUuid(project.environmentId) ? project.environmentId : undefined })
+    if (typeof environment.name !== 'string' || (environment.id !== undefined && !isUuid(environment.id))) throw new ApiError('input', '环境信息不完整。')
+    return manager.bind(target as unknown as PageTarget, { origin: scope.origin, prefix: scope.prefix }, { id: project.id, name: project.name }, { id: environment.id as string | undefined, name: environment.name })
   }
   throw new ApiError('input', '未知的平台操作。')
 }

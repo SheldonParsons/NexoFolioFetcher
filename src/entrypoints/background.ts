@@ -41,7 +41,7 @@ export default defineBackground(() => {
   void storageReady.catch(() => {})
   chrome.runtime.onMessage.addListener((input: unknown, sender, respond: (reply: AuthReply | CredentialsReply | { ok: true; data: unknown }) => void) => {
     const message = object(input)
-    if (!['credentials.get', 'credentials.preference', 'auth.state', 'auth.login', 'auth.logout', 'service.save', 'platform.context', 'platform.projects', 'platform.authorize', 'platform.bind', 'platform.select', 'platform.unbind', 'platform.rename', 'platform.environment', 'platform.environments', 'capture.ready'].includes(String(message.type))) return
+    if (!['credentials.get', 'credentials.preference', 'auth.state', 'auth.login', 'auth.logout', 'service.save', 'platform.context', 'platform.projects', 'platform.bind', 'platform.environments', 'capture.ready'].includes(String(message.type))) return
     // 仅接受本扩展 panel 发来的结构化命令，不提供任意 URL 代理。
     if (sender.id !== chrome.runtime.id || !sender.url || new URL(sender.url).pathname !== '/sidepanel.html'
         || !sender.url.startsWith(chrome.runtime.getURL(''))) return

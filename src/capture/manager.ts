@@ -1,7 +1,7 @@
 import { object, isUuid } from '../api/nexofolio/client'
 import { AUTH_STORAGE_PREFIX, serviceOriginPattern } from '../auth/contracts'
 import { SERVICE_STORAGE_KEY } from '../settings/service'
-import { PLATFORM_STORAGE_PREFIX } from '../platforms/contracts'
+import { SITE_CACHE_PREFIX } from '../platforms/contracts'
 import type { PlatformManager } from '../platforms/manager'
 import { CAPTURE_LIMIT, BODY_LIMIT, BODY_TIMEOUT, PAGE_RELAY_PORT, type CapturedRequest, type CapturedInput, type CapturedResponse, type CaptureScope, type CaptureSnapshot, type CaptureDetail, type PageCaptureOptions } from './contracts'
 import { installPageCapture, stopPageCapture } from './pageHook'
@@ -114,9 +114,8 @@ export class CaptureManager {
     chrome.permissions.onRemoved.addListener(() => { this.detach(); this.reconcileSoon() })
     chrome.storage.onChanged.addListener((changes, area) => {
       const relevant = Object.entries(changes).some(([key, change]) => {
-        if (area === 'session') return key.startsWith('nexofolio-platform-choice:')
         if (area !== 'local') return false
-        if (key === SERVICE_STORAGE_KEY || key.startsWith(PLATFORM_STORAGE_PREFIX)) return true
+        if (key === SERVICE_STORAGE_KEY || key.startsWith(SITE_CACHE_PREFIX)) return true
         if (key.startsWith(AUTH_STORAGE_PREFIX)) {
           const before = object(change.oldValue), after = object(change.newValue)
           return before.id !== after.id || before.token !== after.token
@@ -305,7 +304,8 @@ export class CaptureManager {
     const { context, owner, scope, destination } = await this.platforms.captureContext(window.id)
     if (!this.current(generation)) return
     this.displayOwner = JSON.stringify([destination.serviceUrl, destination.userId])
-    if (!scope || context.status !== 'bound' || !context.page || !context.rule || !context.selected || context.page.tabId !== tab.id) {
+    const binding = context.binding
+    if (!scope || context.status !== 'bound' || !context.page || !binding || context.page.tabId !== tab.id) {
       this.detach(); this.setStatus('stopped', '当前页面尚未完成授权和项目绑定。'); return
     }
     const latest = await chrome.tabs.get(tab.id)
@@ -317,9 +317,8 @@ export class CaptureManager {
     if (!document?.documentId || !this.inScope(document.url, scope)) {
       this.detach(); this.setStatus('checking', '等待主页面加载完成…'); return
     }
-    if (!context.selected.environmentName && !context.selected.environmentId) { this.detach(); this.setStatus('stopped', '请先补齐当前项目环境。'); return }
-    const queueDestination: Destination = { ...destination, projectId: context.selected.id, environment: context.selected.environmentId ? { id: context.selected.environmentId } : { name: context.selected.environmentName! }, site: { origin: scope.origin, prefix: scope.prefix } }
-    const key = JSON.stringify([owner, tab.id, document.documentId, context.rule.id, context.selected.id, scope, queueDestination])
+    const queueDestination: Destination = { ...destination, projectId: binding.project.id, environment: { id: binding.environment.id }, site: { origin: scope.origin, prefix: scope.prefix } }
+    const key = JSON.stringify([owner, tab.id, document.documentId, scope, queueDestination])
     if (this.active?.key === key && this.active.accepting) { this.active.url = tab.url; await this.refreshFrames(this.active); this.publish(); return }
     this.detach()
     const run: RunningCapture = { destination: queueDestination, scope, key, tabId: tab.id, windowId: window.id, url: tab.url, documentId: document.documentId, accepting: true, frames: new Map(), refreshing: false }

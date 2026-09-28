@@ -1,32 +1,54 @@
-import { ApiError, object, isUuid } from '../api/nexofolio/client'
+import { ApiError, isUuid, object } from '../api/nexofolio/client'
 import { listEnvironments, selectedEnvironment, createEnvironment } from '../api/nexofolio/environments'
 import { listProjects, requireProject } from '../api/nexofolio/projects'
+import { bindSite, lookupSite, siteFrom } from '../api/nexofolio/sites'
 import type { AuthManager } from '../auth/manager'
 import { serviceOriginPattern } from '../auth/contracts'
-import { PLATFORM_STORAGE_PREFIX, type BoundProject, type PageTarget, type PlatformContext, type PlatformRule, type PlatformScope } from './contracts'
-import { matchingRule, matchesPath, normalizeScope } from './scope'
+import { legacyChoices, migrateLegacyBindings, resolveLegacyChoice } from '../migrations/nexofolio'
+import { SITE_CACHE_PREFIX, type LegacyProject, type Named, type PageTarget, type PlatformContext, type PlatformScope, type SiteBinding } from './contracts'
+import { matchingScope, matchesPath, normalizeScope, sameScope } from './scope'
 
-type Access = { service: { url: string }; userId: string; token: string; assertCurrent: () => void }
+type Access = { service: { url: string }; userId: string; sessionId: string; token: string; assertCurrent: () => void }
+type Environment = { id?: string; name: string }
+
+// The server site registry decides which project and environment a page belongs to.
+// Lookups are cached per service so a page keeps its binding while the server is unreachable.
 export class PlatformManager {
   private writes: Promise<unknown> = Promise.resolve()
+  private migrated = new Set<string>()
   constructor(private auth: AuthManager) {}
-  private key(access: Access) { return PLATFORM_STORAGE_PREFIX + encodeURIComponent(access.service.url) + ':' + access.userId }
-  private choiceKey(access: Access, target: PageTarget, rule: PlatformRule) { return `nexofolio-platform-choice:${this.key(access)}:${target.tabId}:${rule.id}` }
-  private async rules(access: Access): Promise<PlatformRule[]> {
-    const value = (await chrome.storage.local.get(this.key(access)))[this.key(access)]
-    if (!value) return []
-    if (!Array.isArray(value)) throw new ApiError('protocol', '无法读取平台绑定。')
-    return value.map(item => {
-      const row = object(item)
-      if (typeof row.id !== 'string' || typeof row.origin !== 'string' || typeof row.prefix !== 'string' || typeof row.authorized !== 'boolean' || !Array.isArray(row.projects)) throw new ApiError('protocol', '平台绑定数据格式不正确。')
-      const scope = normalizeScope(row.origin, row.prefix)
-      const projects = row.projects.map(item => {
-        const project = object(item)
-        if (!isUuid(project.id) || typeof project.name !== 'string') throw new ApiError('protocol', '平台项目绑定格式不正确。')
-        return { id: project.id, name: project.name, environmentName: typeof project.environmentName === 'string' ? project.environmentName : undefined, environmentId: isUuid(project.environmentId) ? project.environmentId : undefined }
-      })
-      return { ...scope, id: row.id, name: typeof row.name === 'string' ? row.name : '', authorized: row.authorized, projects }
+
+  private serialize<T>(action: () => Promise<T>) {
+    const operation = this.writes.then(action, action)
+    this.writes = operation.catch(() => {})
+    return operation
+  }
+  private cacheKey(serviceUrl: string) { return SITE_CACHE_PREFIX + encodeURIComponent(serviceUrl) }
+  private async cached(serviceUrl: string): Promise<SiteBinding[]> {
+    const value = (await chrome.storage.local.get(this.cacheKey(serviceUrl)))[this.cacheKey(serviceUrl)]
+    if (!Array.isArray(value)) return []
+    // A cache: unreadable entries are skipped, never fatal.
+    return value.flatMap(item => { try { return [siteFrom({ site: item, project: object(item).project, environment: object(item).environment })] } catch { return [] } })
+  }
+  // The server's answer replaces every cached scope that contains the page and is at least as specific.
+  private remember(serviceUrl: string, page: PageTarget, found: SiteBinding | null) {
+    return this.serialize(async () => {
+      const before = await this.cached(serviceUrl)
+      const after = before.filter(entry => !(entry.origin === page.origin && matchesPath(page.pathname, entry.prefix) && (!found || entry.prefix.length >= found.prefix.length)))
+      if (found) after.push(found)
+      if (JSON.stringify(after) !== JSON.stringify(before)) await chrome.storage.local.set({ [this.cacheKey(serviceUrl)]: after })
     })
+  }
+  private async lookup(serviceUrl: string, page: PageTarget): Promise<{ binding: SiteBinding | null; offline: boolean }> {
+    try {
+      const found = await lookupSite(serviceUrl, page.address)
+      const binding = found && found.origin === page.origin && matchesPath(page.pathname, found.prefix) ? found : null
+      await this.remember(serviceUrl, page, binding)
+      return { binding, offline: false }
+    } catch (error) {
+      if (!(error instanceof ApiError) || !['network', 'server'].includes(error.kind)) throw error
+      return { binding: matchingScope(page.origin, page.pathname, await this.cached(serviceUrl)), offline: true }
+    }
   }
   private async target(windowId: number, expected?: PageTarget): Promise<PageTarget | null> {
     const [tab] = await chrome.tabs.query({ active: true, windowId })
@@ -47,157 +69,77 @@ export class PlatformManager {
   }
   private async describe(access: Access, windowId: number): Promise<PlatformContext> {
     const page = await this.target(windowId)
-    if (!page) return { page: null, status: 'unsupported', rule: null, selected: null }
-    const rule = matchingRule(page.origin, page.pathname, await this.rules(access))
+    if (!page) return { page: null, status: 'unsupported', binding: null, offline: false, legacy: null }
+    const { binding, offline } = await this.lookup(access.service.url, page)
     const allowed = await chrome.permissions.contains({ origins: [serviceOriginPattern(page.origin)] })
+    // An old multi-project scope is offered while nothing at least as specific is registered.
+    const legacy = matchingScope(page.origin, page.pathname, await legacyChoices(access.service.url, access.userId))
     access.assertCurrent()
-    if (!allowed || !rule?.authorized) return { page, status: 'unauthorized', rule, selected: null }
-    const choiceKey = this.choiceKey(access, page, rule)
-    const selectedId = (await chrome.storage.session.get(choiceKey))[choiceKey]
-    const selected = rule.projects.length === 1 ? rule.projects[0]! : rule.projects.find(project => project.id === selectedId) ?? null
-    return { page, rule, selected, status: !rule.projects.length ? 'unbound' : selected ? (selected.environmentId || selected.environmentName?.trim()) ? 'bound' : 'needs-environment' : 'ambiguous' }
+    return {
+      page, binding, offline,
+      legacy: legacy && (!binding || legacy.prefix.length > binding.prefix.length) ? legacy : null,
+      status: !allowed ? 'unauthorized' : binding ? 'bound' : 'unbound',
+    }
+  }
+  // Registers exactly this scope. A named environment is created when missing.
+  private async register(access: Access, scope: PlatformScope, projectId: string, environment: Environment) {
+    const id = environment.id ?? (await createEnvironment(access.service.url, access.token, projectId, environment.name)).id
+    access.assertCurrent()
+    await bindSite(access.service.url, access.token, scope, projectId, id)
+  }
+  // F9, once per session: single-project scopes go to the server unless it already has that scope.
+  private async migrate(access: Access) {
+    if (this.migrated.has(access.sessionId)) return
+    const complete = await this.serialize(() => migrateLegacyBindings(access.service.url, access.userId, async choice => {
+      const found = await lookupSite(access.service.url, choice.origin + choice.prefix)
+      if (found && sameScope(found, choice)) return true
+      if (choice.projects.length > 1) return false
+      const [project] = choice.projects as [LegacyProject]
+      await this.register(access, choice, project.id, { id: project.environmentId, name: project.environmentName ?? '' })
+      return true
+    }))
+    if (complete) this.migrated.add(access.sessionId)
   }
   context(windowId: number) {
     return this.auth.withSession(async access => {
-      const context = await this.describe(access, windowId)
-      if ((context.status === 'bound' || context.status === 'needs-environment') && context.selected) {
-        const project = await requireProject(access.service.url, access.token, context.selected)
-        context.selected = { ...context.selected, id: project.id, name: project.name }
-        if (context.selected.environmentId) context.selected.environmentName = (await selectedEnvironment(access.service.url, access.token, project.id, context.selected.environmentId)).name
-      }
-      access.assertCurrent()
-      return context
+      await this.migrate(access).catch(() => {})
+      return this.describe(access, windowId)
     })
   }
   captureContext(windowId: number) {
     return this.auth.withSession(async access => {
       const context = await this.describe(access, windowId)
-      if ((context.status === 'bound' || context.status === 'needs-environment') && context.selected) await requireProject(access.service.url, access.token, context.selected)
-      // More-specific platform rules always form a boundary, including unbound rules.
-      const scope = context.rule ? {
-        origin: context.rule.origin, prefix: context.rule.prefix,
-        excludedPrefixes: (await this.rules(access)).filter(rule => rule.origin === context.rule!.origin
-          && rule.prefix !== context.rule!.prefix && matchesPath(rule.prefix, context.rule!.prefix)).map(rule => rule.prefix),
+      const binding = context.binding
+      // More specific registered scopes form a boundary: their pages belong to another binding.
+      const scope = binding ? {
+        origin: binding.origin, prefix: binding.prefix,
+        excludedPrefixes: (await this.cached(access.service.url)).filter(entry => entry.origin === binding.origin
+          && entry.prefix !== binding.prefix && matchesPath(entry.prefix, binding.prefix)).map(entry => entry.prefix),
       } : null
       access.assertCurrent()
       return { context, scope, destination: { serviceUrl: access.service.url, userId: access.userId }, owner: `${access.service.url}:${access.userId}:${access.sessionId}` }
     })
   }
   projects(search: string, page: number) { return this.auth.withSession(access => listProjects(access.service.url, access.token, page)) }
-  private serialize<T>(action: () => Promise<T>) {
-    const operation = this.writes.then(action, action)
-    this.writes = operation.catch(() => {})
-    return operation
-  }
-  private scopeFor(target: PageTarget, input: PlatformScope) {
-    const scope = normalizeScope(input.origin, input.prefix)
-    if (scope.origin !== target.origin || !matchesPath(target.pathname, scope.prefix)) throw new ApiError('input', '当前页面不在这个地址范围内。')
-    return scope
-  }
-  private normalizeName(value: string) {
-    const name = value.trim()
-    if (!name || name.length > 100) throw new ApiError('input', '平台名称需要为 1～100 个字符。')
-    return name
-  }
-  authorize(expected: PageTarget, input: PlatformScope, name?: string) {
-    return this.serialize(() => this.auth.withSession(async access => {
-      const target = await this.currentTarget(expected)
-      const scope = this.scopeFor(target, input)
-      if (!await chrome.permissions.contains({ origins: [serviceOriginPattern(scope.origin)] })) throw new ApiError('permission', '尚未获得浏览器访问许可。')
-      const rules = await this.rules(access)
-      let rule = rules.find(item => item.origin === scope.origin && item.prefix === scope.prefix)
-      if (rule) {
-        rule.authorized = true
-        if (name !== undefined) rule.name = this.normalizeName(name)
-      } else { rule = { ...scope, id: crypto.randomUUID(), name: this.normalizeName(name ?? target.title.slice(0, 100)), authorized: true, projects: [] }; rules.push(rule) }
-      await this.currentTarget(expected); access.assertCurrent()
-      await chrome.storage.local.set({ [this.key(access)]: rules })
-      return this.describe(access, target.windowId)
-    }))
-  }
-  bind(expected: PageTarget, input: PlatformScope, project: BoundProject) {
-    return this.serialize(() => this.auth.withSession(async access => {
-      const target = await this.currentTarget(expected)
-      const scope = this.scopeFor(target, input)
-      const rules = await this.rules(access)
-      const rule = rules.find(item => item.origin === scope.origin && item.prefix === scope.prefix)
-      if (!rule?.authorized || !await chrome.permissions.contains({ origins: [serviceOriginPattern(scope.origin)] })) throw new ApiError('permission', '请先授权这个平台范围。')
-      const verified = await requireProject(access.service.url, access.token, project)
-      await this.currentTarget(expected); access.assertCurrent()
-      const inputName = this.normalizeEnvironment(project.environmentName)
-      const environment = project.environmentId ? await selectedEnvironment(access.service.url, access.token, project.id, project.environmentId) : await createEnvironment(access.service.url, access.token, project.id, inputName)
-      const environmentName = environment.name
-      // Deduplicate only within this scope. Other origins/ports/prefixes may bind the same project.
-      const existing = rule.projects.find(item => item.id === verified.id)
-      if (existing) { existing.environmentName = environmentName; existing.environmentId = environment.id; existing.name = verified.name }
-      else rule.projects.push({ id: verified.id, name: verified.name, environmentName, environmentId: environment.id })
-      await this.currentTarget(expected); access.assertCurrent()
-      await chrome.storage.local.set({ [this.key(access)]: rules })
-      await chrome.storage.session.set({ [this.choiceKey(access, target, rule)]: verified.id })
-      return this.describe(access, target.windowId)
-    }))
+  environments(projectId: string, page: number) {
+    return this.auth.withSession(access => listEnvironments(access.service.url, access.token, projectId, page))
   }
   private normalizeEnvironment(value: unknown) {
     if (typeof value !== 'string' || !value.trim() || [...value.trim()].length > 64 || /[\u0000-\u001f\u007f]/.test(value)) throw new ApiError('input', '环境名称需为1–64个字符，可使用中文，不含控制字符。')
     return value.trim()
   }
-  environments(projectId: string, page: number) {
-    return this.auth.withSession(access => listEnvironments(access.service.url, access.token, projectId, page))
-  }
-  environment(expected: PageTarget, ruleId: string, projectId: string, value: string, environmentId?: string) {
-    return this.serialize(() => this.auth.withSession(async access => {
-      const target = await this.currentTarget(expected)
-      const inputName = this.normalizeEnvironment(value)
-      const rules = await this.rules(access)
-      const rule = matchingRule(target.origin, target.pathname, rules)
-      const project = rule?.projects.find(item => item.id === projectId)
-      if (!rule?.authorized || rule.id !== ruleId || !project) throw new ApiError('stale', '绑定已变化，请重新选择。')
-      await requireProject(access.service.url, access.token, project)
-      const environment = environmentId ? await selectedEnvironment(access.service.url, access.token, projectId, environmentId) : await createEnvironment(access.service.url, access.token, projectId, inputName)
-      await this.currentTarget(expected); access.assertCurrent()
-      project.environmentName = environment.name
-      project.environmentId = environment.id
-      await chrome.storage.local.set({ [this.key(access)]: rules })
-      return this.describe(access, target.windowId)
-    }))
-  }
-  rename(expected: PageTarget, ruleId: string, value: string) {
-    return this.serialize(() => this.auth.withSession(async access => {
-      const target = await this.currentTarget(expected)
-      const name = this.normalizeName(value)
-      const rules = await this.rules(access)
-      const rule = matchingRule(target.origin, target.pathname, rules)
-      if (!rule || rule.id !== ruleId) throw new ApiError('stale', '当前平台已变化，请重新操作。')
-      rule.name = name
-      await this.currentTarget(expected); access.assertCurrent()
-      await chrome.storage.local.set({ [this.key(access)]: rules })
-      return this.describe(access, target.windowId)
-    }))
-  }
-  select(expected: PageTarget, ruleId: string, projectId: string) {
+  bind(expected: PageTarget, input: PlatformScope, project: Named, environment: Environment) {
     return this.auth.withSession(async access => {
       const target = await this.currentTarget(expected)
-      const rule = matchingRule(target.origin, target.pathname, await this.rules(access))
-      const project = rule?.projects.find(item => item.id === projectId)
-      if (!rule?.authorized || rule.id !== ruleId || !project) throw new ApiError('stale', '绑定已变化，请重新选择。')
+      const scope = normalizeScope(input.origin, input.prefix)
+      if (scope.origin !== target.origin || !matchesPath(target.pathname, scope.prefix)) throw new ApiError('input', '当前页面不在这个地址范围内。')
+      if (!await chrome.permissions.contains({ origins: [serviceOriginPattern(scope.origin)] })) throw new ApiError('permission', '请先允许插件访问此站点。')
       await requireProject(access.service.url, access.token, project)
+      const chosen = environment.id && isUuid(environment.id) ? await selectedEnvironment(access.service.url, access.token, project.id, environment.id) : { name: this.normalizeEnvironment(environment.name) }
       await this.currentTarget(expected); access.assertCurrent()
-      await chrome.storage.session.set({ [this.choiceKey(access, target, rule)]: projectId })
+      await this.register(access, scope, project.id, chosen)
+      await this.serialize(() => resolveLegacyChoice(access.service.url, access.userId, scope))
       return this.describe(access, target.windowId)
     })
-  }
-  unbind(expected: PageTarget, ruleId: string, projectId: string) {
-    return this.serialize(() => this.auth.withSession(async access => {
-      const target = await this.currentTarget(expected)
-      const rules = await this.rules(access)
-      const rule = matchingRule(target.origin, target.pathname, rules)
-      if (!rule || rule.id !== ruleId) throw new ApiError('stale', '绑定已变化，请重试。')
-      rule.projects = rule.projects.filter(project => project.id !== projectId)
-      access.assertCurrent()
-      await chrome.storage.local.set({ [this.key(access)]: rules })
-      await chrome.storage.session.remove(this.choiceKey(access, target, rule))
-      // Keep the explicit child scope even when empty; don't silently fall back to its parent.
-      return this.describe(access, target.windowId)
-    }))
   }
 }

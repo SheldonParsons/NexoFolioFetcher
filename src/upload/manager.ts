@@ -2,7 +2,7 @@ import { ApiError } from '../api/nexofolio/client'
 import { submitBatch } from '../api/nexofolio/collect'
 import { QueueStore } from './store'
 import { batchOf, convert, interrupted, recordFailure, rejections, terminal } from './converter'
-import { groupKey, encodedSize, BATCH_TARGET_BYTES, MAX_QUEUE_BYTES, MAX_QUEUE_ITEMS, MAX_RECORDS, RESERVATION_BYTES, type Destination, type Observation, type QueueBatch, type QueueItem, type QueueStatus, type ObservationUploadState } from './contracts'
+import { groupKey, encodedSize, BATCH_TARGET_BYTES, MAX_QUEUE_BYTES, MAX_QUEUE_ITEMS, MAX_RECORDS, RESERVATION_BYTES, type Destination, type Observation, type QueueBatch, type QueueItem, type QueueStatus, type ObservationUploadState, rejectionReason } from './contracts'
 
 // Uploading is decoupled from login: every item carries its own destination and collect needs no token.
 export class UploadManager {
@@ -29,11 +29,11 @@ export class UploadManager {
     this.ready=this.restore();void this.ready.catch(()=>{this.storageFailed=true;this.message='上传队列无法读取，已暂停新增采集。';this.notify()})}
   observationState(id:string):ObservationUploadState {
     const item=this.items.get(id)
-    if(this.confirmed.has(id))return {state:'confirmed',message:'接收服务已确认'}
-    if(item?.state==='failed')return {state:'failed',message:item.failure || '上传失败，原始记录保留'}
-    if(this.sending.has(id))return {state:'sending',message:'正在上传，等待接收确认'}
-    if(item && item.state!=='draft')return {state:'queued',message:'待上传；未确认数据保留'}
-    return {state:'collecting',message:'正在采集请求与响应'}
+    if(this.confirmed.has(id))return {state:'confirmed',message:'已确认'}
+    if(item?.state==='failed')return {state:'failed',message:`被拒绝：${rejectionReason(item.failure)}`}
+    if(this.sending.has(id))return {state:'sending',message:'待上传，正在发送'}
+    if(item && item.state!=='draft')return {state:'queued',message:'待上传'}
+    return {state:'collecting',message:'采集中'}
   }
   private hasCredits(){return [...this.reservations.keys()].some(id=>!this.items.has(id))}
   onChange(fn:()=>void){this.listeners.add(fn);return()=>this.listeners.delete(fn)}

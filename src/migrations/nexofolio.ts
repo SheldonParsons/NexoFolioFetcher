@@ -1,3 +1,7 @@
+import { ApiError, isUuid, object } from '../api/nexofolio/client'
+import type { LegacyChoice, PlatformScope } from '../platforms/contracts'
+import { normalizeScope, sameScope } from '../platforms/scope'
+
 export const RESET_MARKER = 'nexofolio.migration.backend-v1'
 export const RESET_VERSION = 1
 let migration: Promise<void> | undefined
@@ -58,7 +62,7 @@ async function removeLegacyBindingService() {
   if (values[marker] === true) return
   const updates: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(values)) {
-    if (!key.startsWith('nexofolio.platforms.v1:') || !Array.isArray(value)) continue
+    if (!key.startsWith(LEGACY_BINDINGS) || !Array.isArray(value)) continue
     let changed = false
     for (const rule of value) {
       if (!rule || !Array.isArray(rule.projects)) continue
@@ -69,4 +73,58 @@ async function removeLegacyBindingService() {
     if (changed) updates[key] = value
   }
   await chrome.storage.local.set({ ...updates, [marker]: true })
+}
+
+// Bindings kept per service and user before the server site registry existed. They move
+// to the server after login; a scope bound to several projects waits for the user's choice.
+const LEGACY_BINDINGS = 'nexofolio.platforms.v1:'
+const legacyKey = (serviceUrl: string, userId: string) => LEGACY_BINDINGS + encodeURIComponent(serviceUrl) + ':' + userId
+
+// Only projects with an environment can be registered; unreadable or incomplete rules are dropped.
+export async function legacyChoices(serviceUrl: string, userId: string): Promise<LegacyChoice[]> {
+  const key = legacyKey(serviceUrl, userId)
+  const value = (await chrome.storage.local.get(key))[key]
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item): LegacyChoice[] => {
+    const rule = object(item)
+    if (typeof rule.origin !== 'string' || typeof rule.prefix !== 'string' || !Array.isArray(rule.projects)) return []
+    let scope: PlatformScope
+    try { scope = normalizeScope(rule.origin, rule.prefix) } catch { return [] }
+    const projects = rule.projects.flatMap(entry => {
+      const project = object(entry)
+      const environmentId = isUuid(project.environmentId) ? project.environmentId : undefined
+      const environmentName = typeof project.environmentName === 'string' && project.environmentName.trim() ? project.environmentName.trim() : undefined
+      if (!isUuid(project.id) || typeof project.name !== 'string' || (!environmentId && !environmentName)) return []
+      return [{ id: project.id, name: project.name, environmentId, environmentName }]
+    })
+    return projects.length ? [{ ...scope, projects }] : []
+  })
+}
+async function saveLegacy(serviceUrl: string, userId: string, choices: LegacyChoice[]) {
+  const key = legacyKey(serviceUrl, userId)
+  if (choices.length) await chrome.storage.local.set({ [key]: choices })
+  else await chrome.storage.local.remove(key)
+}
+
+// `publish` settles one scope on the server and returns false when the user has to choose.
+// Returns whether nothing is left to retry.
+export async function migrateLegacyBindings(serviceUrl: string, userId: string, publish: (choice: LegacyChoice) => Promise<boolean>): Promise<boolean> {
+  const left: LegacyChoice[] = []
+  let complete = true
+  for (const choice of await legacyChoices(serviceUrl, userId)) {
+    try { if (!await publish(choice)) left.push(choice) }
+    catch (error) {
+      // Rejected by the server (bad scope, no access, project gone): dropped, the user binds again.
+      // Anything else (offline, busy, session change) is kept for the next attempt.
+      if (error instanceof ApiError && [400, 403, 404].includes(error.status ?? 0)) continue
+      left.push(choice); complete = false
+    }
+  }
+  await saveLegacy(serviceUrl, userId, left)
+  return complete
+}
+export async function resolveLegacyChoice(serviceUrl: string, userId: string, scope: PlatformScope) {
+  const choices = await legacyChoices(serviceUrl, userId)
+  const left = choices.filter(choice => !sameScope(choice, scope))
+  if (left.length !== choices.length) await saveLegacy(serviceUrl, userId, left)
 }

@@ -12,6 +12,7 @@ watch(() => props.request.upload?.state, (next, previous) => {
 })
 onBeforeUnmount(() => clearTimeout(flashTimer))
 const uploadState = computed(() => props.request.upload?.state || 'collecting')
+const uploadMessage = computed(() => props.request.upload?.message || '采集中')
 const path = computed(() => {
   try { return new URL(props.request.url).pathname || '/' }
   catch { return props.request.url.replace(/^https?:\/\/[^/]+/i, '').split(/[?#]/)[0] || '/' }
@@ -29,8 +30,8 @@ const status = computed(() => {
 </script>
 
 <template>
-  <div class="request-line" :class="[`upload-${uploadState}`, { 'upload-confirming': confirmedFlash }]" :title="request.upload?.message">
-    <span class="request-upload-fill" aria-hidden="true"><span class="request-upload-cells"></span></span>
+  <div class="request-line" :class="[`upload-${uploadState}`, { 'upload-confirming': confirmedFlash }]" :title="uploadMessage">
+    <span class="request-upload-fill" role="img" :aria-label="uploadMessage"><span class="request-upload-cells"></span></span>
     <span class="request-method" :title="request.method">{{ request.method }}</span>
     <code class="request-path" :title="path">{{ path }}</code>
     <span class="request-status-slot" :aria-label="status.title" :title="status.title">

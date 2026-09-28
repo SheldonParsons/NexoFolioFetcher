@@ -3,11 +3,12 @@ import { computed } from 'vue'
 import { CAPTURE_LIMIT, type CaptureSnapshot } from '../../capture/contracts'
 import AppIcon from './AppIcon.vue'
 import CaptureRow from './CaptureRow.vue'
+import { rejectionReason } from '../../upload/contracts'
 
 const props = defineProps<{ snapshot: CaptureSnapshot }>()
 const emit = defineEmits<{ retry: [] }>()
 const attention = computed(() => ['error','interrupted'].includes(props.snapshot.status) || !!props.snapshot.upload?.failed || !!props.snapshot.upload?.paused)
-const attentionMessage = computed(() => [props.snapshot.message, props.snapshot.upload?.message, ...(props.snapshot.upload?.failures || []).map(f => `${f.reason} · ${f.count} 条保留`)].filter(Boolean).join('\n'))
+const attentionMessage = computed(() => [props.snapshot.message, props.snapshot.upload?.message, ...(props.snapshot.upload?.failures || []).map(f => `${f.count} 条被拒绝：${rejectionReason(f.reason)}，原始记录保留`)].filter(Boolean).join('\n'))
 </script>
 
 <template>

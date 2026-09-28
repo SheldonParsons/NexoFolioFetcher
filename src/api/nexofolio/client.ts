@@ -10,7 +10,7 @@ export const isUuid = (value: unknown): value is string => typeof value === 'str
 export const isAuthFailure = (status: number) => status === 401
 export class NexoFolioClient {
   constructor(private baseUrl: string, private token?: string) {}
-  async request(path: string, options: { method?: 'GET' | 'POST'; body?: unknown; timeoutMs?: number } = {}): Promise<unknown> {
+  async request(path: string, options: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown; timeoutMs?: number } = {}): Promise<unknown> {
     if (!path.startsWith('/v1/') || path.split('?')[0]?.split('/').includes('..')) throw new ApiError('input', '无效的接口路径。')
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15000)
@@ -38,6 +38,7 @@ export class NexoFolioClient {
         const retryAfterMs = retry === null ? undefined : Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retry) - Date.now())
         throw new ApiError(response.status === 403 ? 'permission' : 'server', message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined)
       }
+      if (response.status === 204) return null
       if (payload === undefined) throw new ApiError('protocol', '服务返回了无法识别的内容，请检查 NexoFolio 服务地址。', response.status)
       return payload
     } catch (error) {
