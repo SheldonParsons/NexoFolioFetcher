@@ -11,7 +11,7 @@
 ## 执行顺序
 
 1. 后端先停止 API 和 worker，完成数据库/原文卷备份；确认尚未恢复服务。关闭插件 panel，把活动标签切换到新标签页或未授权页面。不要卸载插件，不要删除 Chrome profile，不要退出登录或取消已有授权。
-2. 在 `/Users/sheldon/Documents/GithubProject/AsyncTestFetcher` 执行：
+2. 在 `/Users/sheldon/Documents/GithubProject/NexoFolioFetcher` 执行：
 
    ```sh
    node scripts/prepare-capture-reset.mjs prepare

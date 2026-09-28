@@ -2,7 +2,7 @@
 
 一个运行在 Chrome 原生侧边栏（panel）中的 NexoFolio 捕获扩展。
 
-仓库：[SheldonParsons/NexoFolioFetcher](https://github.com/SheldonParsons/NexoFolioFetcher)。登录和项目绑定已迁移至 NexoFolio /v1 API。首次加载新版会清理本插件旧数据并记录一次性迁移标记；需重新配置 NexoFolio 基地址和登录。本地目录暂保留 `AsyncTestFetcher`，避免改变已加载扩展的路径。
+仓库：[SheldonParsons/NexoFolioFetcher](https://github.com/SheldonParsons/NexoFolioFetcher)。登录和项目绑定已迁移至 NexoFolio /v1 API。首次加载新版会清理本插件旧数据并记录一次性迁移标记；需重新配置 NexoFolio 基地址和登录。
 
 当前版本 `0.1.0` 提供欢迎页、NexoFolio 登录、用户昵称首字头像、持久化登录态、本地退出和服务配置。配置支持 HTTP/HTTPS、域名/IP、自定义端口及部署路径。
 
@@ -60,12 +60,12 @@ Chrome 主机访问许可不按路径隔离，插件额外执行上述路径规�
 
 ## 开发环境
 
-- 固定开发目录：`/Users/sheldon/Documents/GithubProject/AsyncTestFetcher`，直接在 `main` 分支开发。除非用户明确要求，不创建独立 worktree。
+- 固定开发目录：`/Users/sheldon/Documents/GithubProject/NexoFolioFetcher`，直接在 `main` 分支开发。除非用户明确要求，不创建独立 worktree。
 - Node.js 22 或更高版本（使用 nvm 时运行 `nvm use`）。
 - Chrome 125 或更高版本，Manifest V3。
 
 ```sh
-cd /Users/sheldon/Documents/GithubProject/AsyncTestFetcher
+cd /Users/sheldon/Documents/GithubProject/NexoFolioFetcher
 nvm use
 npm ci
 npm run build
@@ -84,7 +84,7 @@ npm run build
 当前开发目录下可直接加载的完整路径：
 
 ```text
-/Users/sheldon/Documents/GithubProject/AsyncTestFetcher/.output/chrome-mv3
+/Users/sheldon/Documents/GithubProject/NexoFolioFetcher/.output/chrome-mv3
 ```
 
 此目录由 `npm run build` 生成，不需要开发服务器持续运行。macOS 文件选择器中可以按 `⌘⇧G` 粘贴完整路径。源码修改后重新构建，再在扩展管理页刷新扩展。
