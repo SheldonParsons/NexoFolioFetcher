@@ -10,7 +10,7 @@ for (const size of [16, 32, 48, 128]) {
     .toFile(new URL(`../public/icons/${size}.png`, import.meta.url).pathname)
 }
 
-const licenses = await Promise.all(['vue', 'reka-ui', 'morphicons', 'lucide'].map(async (name) => {
+const licenses = await Promise.all(['vue', 'reka-ui', 'morphicons', 'lucide', 'ajv', 'ajv-formats', 'fast-deep-equal'].map(async (name) => {
   const license = await readFile(new URL(`../node_modules/${name}/LICENSE`, import.meta.url), 'utf8')
   return `${name}\n${license}`
 }))

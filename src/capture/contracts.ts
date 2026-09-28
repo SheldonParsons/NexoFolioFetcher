@@ -6,6 +6,7 @@ export interface CapturedRequest {
   time: number
   frame: 'page' | 'iframe'
   response: ResponseSummary
+  upload?: import('../upload/contracts').ObservationUploadState
   revision: number
 }
 export type ResponseState = 'pending' | 'reading' | 'complete' | 'truncated' | 'unreadable' | 'failed' | 'timeout'
@@ -28,13 +29,18 @@ export interface CaptureSnapshot {
   status: 'idle' | 'checking' | 'listening' | 'stopped' | 'interrupted' | 'error'
   message: string
   rows: CapturedRequest[]
+  upload?: import('../upload/contracts').QueueStatus
 }
-export const CAPTURE_PORT = 'fetcher-capture-v3'
-export const PAGE_RELAY_PORT = 'fetcher-page-relay-v3'
+export const CAPTURE_PORT = 'nexofolio-capture-v3'
+export const PAGE_RELAY_PORT = 'nexofolio-page-relay-v3'
 export const CAPTURE_LIMIT = 20
 export const BODY_LIMIT = 1024 * 1024
 export const BODY_TIMEOUT = 15000
+export interface CaptureScope { origin: string; prefix: string; excludedPrefixes: string[] }
 export interface PageCaptureOptions {
+  contextSeed?: import('../evidence/context').ContextSeed
+  credits?: number
+  scope?: CaptureScope
   nonce: string
   url: string
   maxBytes: number

@@ -1,3 +1,4 @@
+import type { EvidenceContext } from '../evidence/context'
 import type { PageCaptureOptions, CapturedHeaders, CapturedBody, CapturedInput } from './contracts'
 
 // Serialized by chrome.scripting into MAIN. Keep every runtime dependency inside this function.
@@ -6,6 +7,7 @@ export function installPageCapture(options: PageCaptureOptions) {
   const slot = '__asynctest_page_capture_v2__'
   const previous = host[slot] as { stop?: () => void } | undefined
   try { previous?.stop?.() } catch { /* The page may have replaced the old marker. */ }
+  const nativePush = history.pushState, nativeReplace = history.replaceState
   const nativeFetch = window.fetch
   const NativeXHR = window.XMLHttpRequest
   const nativeOpen = NativeXHR.prototype.open
@@ -26,25 +28,63 @@ export function installPageCapture(options: PageCaptureOptions) {
   const sendDescriptor = Object.getOwnPropertyDescriptor(NativeXHR.prototype, 'send')
   const headerDescriptor = Object.getOwnPropertyDescriptor(NativeXHR.prototype, 'setRequestHeader')
   const encoder = new TextEncoder()
-  const records = new Map<string, { id: string; done: boolean; live: boolean; timer: number; cancel: () => void; cleanup: () => void; requestCancel: () => void; requestTimer: number; requestDone: boolean }>()
+  const records = new Map<string, { id: string; done: boolean; live: boolean; timer: number; cancel: () => void; cleanup: () => void; requestCancel: () => void; requestTimer: number; requestDone: boolean; context: EvidenceContext }>()
   const xhrMetadata = new WeakMap<XMLHttpRequest, { url: string; method: string; sent: boolean; headers: CapturedHeaders; record?: ReturnType<typeof start> }>()
+  let accepting = true
+  const subscribers = new Set<(type: string, target?: Element, trusted?: boolean) => void>()
+  let viewId = options.contextSeed?.view_id || crypto.randomUUID(), lastUrl = location.href, eventSequence = 0
+  // Event.eventPhase returns to NONE after dispatch. Retain no sticky operation ID
+  // across timers, polling or promises; nested dispatches can return to the outer event.
+  let interactions: { event: Event; id: string }[] = []
+  const activeInteraction = () => {
+    interactions = interactions.filter(item => item.event.eventPhase !== 0)
+    return interactions.at(-1)?.id
+  }
+  const context = (): EvidenceContext => {
+    if (lastUrl !== location.href) { lastUrl = location.href; viewId = crypto.randomUUID(); eventSequence = 0; for (const fn of subscribers) fn('route') }
+    const interactionId = activeInteraction()
+    return { browser_instance_id: options.contextSeed?.browser_instance_id || options.nonce, page_instance_id: options.contextSeed?.page_instance_id || options.nonce, frame_instance_id: options.contextSeed?.frame_instance_id || options.nonce, view_id: viewId, event_seq: ++eventSequence, page_url: lastUrl, ...(interactionId ? { interaction_id: interactionId } : {}) }
+  }
+  const interaction = (event: Event) => {
+    if (!allowed()) return
+    const element = event.target instanceof Element ? event.target : undefined
+    const selector = event.type === 'submit' ? 'form,[role="form"],.el-form,.ant-form,.ivu-form,.n-form,.arco-form'
+      : 'input,textarea,select,button,a[href],[role="button"],[role="checkbox"],[role="radio"],[role="switch"],[role="combobox"],[role="option"],[role="menuitem"],[role="tab"],.el-button,.ant-btn,.ivu-btn,.n-button,.arco-btn,.el-select,.ant-select,.ivu-select,.n-base-selection,.arco-select,.el-select-dropdown__item,.ant-select-item-option,.ivu-select-item,.arco-select-option'
+    let target: Element | undefined, current = element
+    for (let depth = 0; current && depth <= 6; depth++, current = current.parentElement || undefined) {
+      if (current.matches(selector)) { target = current; break }
+    }
+    if (!target) return
+    context()
+    interactions.push({ event, id: crypto.randomUUID() })
+    // A bounded stack avoids retaining arbitrary page events. Observation must
+    // never throw through the site's own event handler.
+    if (interactions.length > 16) interactions.shift()
+    for (const fn of subscribers) { try { fn(event.type, target, event.isTrusted) } catch {} }
+  }
+  const route = () => { if (allowed()) context() }
   let enabled = true
   let sequence = 0
+  let credits = options.credits ?? 0
   let readers = 0
   let leaseTimer = 0
   let fetchInstalled = false
   let xhrInstalled = false
 
   function allowed() {
-    if (!enabled) return false
-    if (location.href !== options.url || document.visibilityState === 'hidden') { stop(); return false }
+    if (!enabled || !accepting) return false
+    const scope = options.scope
+    const matches = (prefix: string) => prefix === '/' || location.pathname === prefix || location.pathname.startsWith(prefix + '/')
+    const inScope = scope ? location.origin === scope.origin && matches(scope.prefix) && !scope.excludedPrefixes.some(matches) : location.href === options.url
+    if (!inScope || document.visibilityState === 'hidden') { suspend(); return false }
     return true
   }
   function emit(payload: object) {
-    if (!allowed()) return
+    if (!enabled) return
+    if (('kind' in payload && (payload.kind === 'request' || payload.kind === 'capacity')) && !allowed()) return
     try { nativePost({ direction: 'fetcher-data-v2', nonce: options.nonce, payload }, '*') } catch { /* Observation must not fail the application request. */ }
   }
-  function isCurrent(record: ReturnType<typeof start>) { return !!record && !record.done && records.get(record.id) === record && allowed() }
+  function isCurrent(record: ReturnType<typeof start>) { return !!record && !record.done && records.get(record.id) === record && enabled }
   function disposeRecord(record: NonNullable<ReturnType<typeof start>>) {
     record.live = false
     record.done = true
@@ -56,29 +96,25 @@ export function installPageCapture(options: PageCaptureOptions) {
   }
   function finish(record: ReturnType<typeof start>, response: Record<string, unknown>) {
     if (!isCurrent(record) || !record) return
-    emit({ kind: 'response', requestId: record.id, response })
+    emit({ kind: 'response', requestId: record.id, context: { ...record.context, ...(['complete','failed'].includes(String(response.state)) ? { response_completed_at_ms: now() } : {}) }, response })
     record.done = true
     clearTimer(record.timer)
     record.cancel()
     record.cleanup()
+    if (record.requestDone) records.delete(record.id)
   }
   function unavailable(record: ReturnType<typeof start>, state: string, message: string) {
     finish(record, { state, status: null, statusText: '', contentType: '', url: '', encoding: 'none', bytes: 0, body: '', message, headers: { entries: [], state: 'unreadable', message: '没有可读取的响应头。' } })
   }
   function start(url: string, method: string, type: 'XHR' | 'Fetch', request: CapturedInput) {
     if (!allowed() || !/^https?:\/\//i.test(url)) return null
+    if (credits <= 0) { emit({ kind: 'capacity' }); return null }
+    credits--
     const id = String(++sequence)
-    const record = { id, done: false, live: true, timer: 0, cancel: () => {}, cleanup: () => {}, requestCancel: () => {}, requestTimer: 0, requestDone: false }
+    const record = { id, done: false, live: true, timer: 0, cancel: () => {}, cleanup: () => {}, requestCancel: () => {}, requestTimer: 0, requestDone: false, context: { ...context(), request_started_at_ms: now() } as EvidenceContext }
     records.set(id, record)
-    while (records.size > options.maxRows) {
-      const oldest = records.keys().next().value
-      if (oldest === undefined) break
-      const evicted = records.get(oldest)
-      if (evicted) disposeRecord(evicted)
-      records.delete(oldest)
-    }
     record.timer = setTimer(() => unavailable(record, 'timeout', '30 秒内未收到可读取响应；原请求未被中止。'), options.requestTimeout)
-    emit({ kind: 'request', requestId: id, url: url.slice(0, 16384), method: method.slice(0, 32), type, time: now(), request })
+    emit({ kind: 'request', requestId: id, url: url.slice(0, 16384), method: method.slice(0, 32), type, time: record.context.request_started_at_ms, context: record.context, request })
     return record
   }
   function absoluteUrl(value: unknown): string {
@@ -182,13 +218,14 @@ export function installPageCapture(options: PageCaptureOptions) {
   function blankBody(state: CapturedBody['state'], message = ''): CapturedBody {
     return { state, encoding: 'none', bytes: 0, contentType: '', body: '', message }
   }
-  function requestAlive(record: ReturnType<typeof start>) { return !!record && record.live && !record.requestDone && records.get(record.id) === record && allowed() }
+  function requestAlive(record: ReturnType<typeof start>) { return !!record && record.live && !record.requestDone && records.get(record.id) === record && enabled }
   function finishRequest(record: ReturnType<typeof start>, body: CapturedBody) {
     if (!record || !requestAlive(record)) return
     emit({ kind: 'request-body', requestId: record.id, body })
     record.requestDone = true
     clearTimer(record.requestTimer)
     record.requestCancel()
+    if (record.done) records.delete(record.id)
   }
   async function captureBody(record: ReturnType<typeof start>, value: unknown, contentType: string, requestCopy = false) {
     if (!record || !requestAlive(record)) return
@@ -305,6 +342,8 @@ export function installPageCapture(options: PageCaptureOptions) {
       }
     } finally { clearTimer(timer); readers--; record.cancel = () => {} }
   }
+  const wrappedPush: History['pushState'] = function(this: History, ...args) { const result = Reflect.apply(nativePush, this, args); route(); return result }
+  const wrappedReplace: History['replaceState'] = function(this: History, ...args) { const result = Reflect.apply(nativeReplace, this, args); route(); return result }
   const wrappedFetch = function(this: unknown, ...args: Parameters<typeof fetch>): ReturnType<typeof fetch> {
     let record: ReturnType<typeof start> = null
     try {
@@ -437,33 +476,46 @@ export function installPageCapture(options: PageCaptureOptions) {
       else Reflect.set(object, key, original)
     } catch {}
   }
+  function suspend() {
+    accepting = false
+    interactions = []
+    for (const fn of subscribers) fn('stop')
+    subscribers.clear()
+  }
   function stop() {
     if (!enabled) return
+    suspend()
     enabled = false
     clearTimer(leaseTimer)
     for (const record of records.values()) disposeRecord(record)
     records.clear()
     restore(window, 'fetch', wrappedFetch, nativeFetch, fetchDescriptor)
+    restore(history, 'pushState', wrappedPush, nativePush); restore(history, 'replaceState', wrappedReplace, nativeReplace)
     restore(NativeXHR.prototype, 'open', wrappedOpen, nativeOpen, openDescriptor)
     restore(NativeXHR.prototype, 'send', wrappedSend, nativeSend, sendDescriptor)
     restore(NativeXHR.prototype, 'setRequestHeader', wrappedSetHeader, nativeSetHeader, headerDescriptor)
     removeEvent.call(window, 'message', control)
     removeEvent.call(window, 'pagehide', stop)
+    for (const name of ['click','change','submit']) removeEvent.call(document, name, interaction, true)
+    removeEvent.call(window, 'popstate', route); removeEvent.call(window, 'hashchange', route)
     if (host[slot] === controller) delete host[slot]
   }
   function renew() { clearTimer(leaseTimer); leaseTimer = setTimer(stop, options.leaseMs) }
   function control(event: Event) {
     const message = event as MessageEvent
     if (message.source !== window || message.data?.direction !== 'fetcher-control-v2' || message.data?.nonce !== options.nonce) return
-    if (message.data.type === 'stop') stop()
-    else if (message.data.type === 'renew' && allowed()) renew()
+    if (message.data.type === 'credit' && Number.isInteger(message.data.count) && message.data.count > 0 && message.data.count <= 2) credits += message.data.count
+    else if (message.data.type === 'suspend') suspend()
+    else if (message.data.type === 'stop') stop()
+    else if (message.data.type === 'renew' && enabled) renew()
     else if (message.data.type === 'drop' && typeof message.data.requestId === 'string') {
       const record = records.get(message.data.requestId)
       if (record) { disposeRecord(record); records.delete(record.id) }
     }
   }
-  const controller = { stop, nonce: options.nonce }
+  const controller = { stop, context, accepting: allowed, subscribe(fn: (type: string, target?: Element, trusted?: boolean) => void) { subscribers.add(fn); return () => subscribers.delete(fn) }, nonce: options.nonce }
   try {
+    Reflect.set(history,'pushState',wrappedPush); Reflect.set(history,'replaceState',wrappedReplace)
     fetchInstalled = typeof nativeFetch === 'function' && Reflect.set(window, 'fetch', wrappedFetch) && window.fetch === wrappedFetch
     xhrInstalled = Reflect.set(NativeXHR.prototype, 'open', wrappedOpen) && Reflect.set(NativeXHR.prototype, 'send', wrappedSend) && Reflect.set(NativeXHR.prototype, 'setRequestHeader', wrappedSetHeader)
     if (!xhrInstalled) {
@@ -474,6 +526,8 @@ export function installPageCapture(options: PageCaptureOptions) {
     host[slot] = controller
     addEvent.call(window, 'message', control)
     addEvent.call(window, 'pagehide', stop)
+    for (const name of ['click','change','submit']) addEvent.call(document, name, interaction, true)
+    addEvent.call(window, 'popstate', route); addEvent.call(window, 'hashchange', route)
     renew()
     if (!allowed()) return { fetch: false, xhr: false }
     return { fetch: fetchInstalled, xhr: xhrInstalled }

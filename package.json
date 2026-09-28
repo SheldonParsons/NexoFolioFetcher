@@ -2,16 +2,18 @@
   "name": "nexofolio-fetcher",
   "description": "NexoFolio Fetcher Chrome panel",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "dev": "wxt",
-    "build": "node scripts/build-icons.mjs && wxt build",
+    "build": "node scripts/build-ingestion-contract.mjs && node scripts/build-icons.mjs && wxt build",
+    "package:dev": "npm run build && python3 scripts/package-release.py",
     "typecheck": "wxt prepare && vue-tsc --noEmit",
-    "postinstall": "wxt prepare"
+    "postinstall": "wxt prepare",
+    "release:dev": "node scripts/release-dev.mjs"
   },
   "dependencies": {
     "lucide": "1.43.0",
@@ -22,6 +24,9 @@
   "devDependencies": {
     "@types/chrome": "0.2.9",
     "@wxt-dev/module-vue": "1.0.3",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "ali-oss": "6.23.0",
     "sharp": "0.35.4",
     "typescript": "5.9.3",
     "vue-tsc": "3.3.11",

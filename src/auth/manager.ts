@@ -1,18 +1,18 @@
-import * as api from '../api/asynctest/auth'
-import { ApiError } from '../api/asynctest/client'
+import * as api from '../api/nexofolio/auth'
+import { ApiError } from '../api/nexofolio/client'
 import { loadService, saveService, type ServiceConfig } from '../settings/service'
 import { type AuthState, serviceOriginPattern } from './contracts'
-import { readCredentials, readSession, removeSession, writeCredentialsPreference, writeSession, writeSuccessfulLogin, type StoredSession } from './store'
+import { readSession, removeSession, writeSession, readCredentials, writeCredentialsPreference, writeSuccessfulLogin, type StoredSession } from './store'
 
 // 后台唯一会话所有者。页面只收到资料与状态，永远不收到 token。
 export class AuthManager {
   private generation = 0
   private writes: Promise<unknown> = Promise.resolve()
   private checks = new Map<string, Promise<AuthState>>()
-  private verified = new Map<string, { at: number; state: AuthState }>()
   private credentialEdits = new Map<string, number>()
+  private verified = new Map<string, { at: number; state: AuthState }>()
 
-  async withSession<T>(action: (access: { service: ServiceConfig; userId: number; sessionId: string; token: string; assertCurrent: () => void }) => Promise<T>): Promise<T> {
+  async withSession<T>(action: (access: { service: ServiceConfig; userId: string; sessionId: string; token: string; assertCurrent: () => void }) => Promise<T>): Promise<T> {
     const generation = this.generation
     const state = await this.snapshot()
     this.ensureCurrent(generation)
@@ -52,7 +52,7 @@ export class AuthManager {
   }
 
   private state(service: ServiceConfig, session: StoredSession, status: AuthState['status'], message?: string): AuthState {
-    return { service, user: session.user, sessionId: session.id, status, message }
+    return { service, user: session.user, sessionId: session.id, status, message, expiresAt: session.expiresAt, projectSync: session.projectSync }
   }
 
   async snapshot(force = false): Promise<AuthState> {
@@ -70,7 +70,7 @@ export class AuthManager {
     if (!force && cached && Date.now() - cached.at < 30000) return { ...cached.state, service }
     const existing = this.checks.get(session.id)
     if (existing) return existing
-    const check = this.validate(service, session, generation, force || !cached).finally(() => this.checks.delete(session.id))
+    const check = this.validate(service, session, generation).finally(() => this.checks.delete(session.id))
     this.checks.set(session.id, check)
     return check
   }
@@ -84,12 +84,9 @@ export class AuthManager {
     return { service, user: null, sessionId: null, status: 'anonymous', reason: 'expired', message: '登录已失效，请重新登录。' }
   }
 
-  private async validate(service: ServiceConfig, session: StoredSession, generation: number, refreshProfile: boolean): Promise<AuthState> {
+  private async validate(service: ServiceConfig, session: StoredSession, generation: number): Promise<AuthState> {
     try {
-      if (!refreshProfile && !await api.checkToken(service.url, session.token)) return await this.expire(service, session, generation)
-      this.ensureCurrent(generation)
-      // 恢复/手动刷新用 me 一次确认身份和头像；周期检查使用轻量 check。
-      const user = refreshProfile ? await api.currentUser(service.url, session.token) : session.user
+      const user = await api.currentUser(service.url, session.token)
       this.ensureCurrent(generation)
       if (JSON.stringify(user) !== JSON.stringify(session.user)) {
         await this.write(async () => {
@@ -109,33 +106,26 @@ export class AuthManager {
     }
   }
 
-  async login(serviceUrl: string, username: string, password: string, remember = false): Promise<AuthState> {
-    if (!username.trim() || username.length > 100 || !password || password.length > 1024) throw new ApiError('input', '请输入有效的账号和密码。')
+  async login(serviceUrl: string, account: string, password: string, remember = false): Promise<AuthState> {
+    const encoder = new TextEncoder()
+    if (!account.trim() || encoder.encode(account.trim()).length > 128 || !password || encoder.encode(password).length > 1024) throw new ApiError('input', '请输入有效的账号和密码（账号最多128字节，密码最多1024字节）。')
     const generation = ++this.generation
     const service = await this.service(serviceUrl)
+    if (!await this.allowed(service.url)) throw new ApiError('permission', '请允许插件访问此 NexoFolio 服务。')
+    this.ensureCurrent(generation)
     const credentialEdit = this.credentialEdits.get(service.url) ?? 0
-    if (!await this.allowed(service.url)) throw new ApiError('permission', '请允许插件访问此服务后再登录。')
+    const result = await api.login(service.url, account.trim(), password)
     this.ensureCurrent(generation)
-    const result = await api.login(service.url, username.trim(), password)
-    this.ensureCurrent(generation)
-    const session: StoredSession = { id: crypto.randomUUID(), serviceUrl: service.url, token: result.token, user: result.user }
-    await this.write(async () => { this.ensureCurrent(generation); await writeSession(session) })
+    const session: StoredSession = { id: crypto.randomUUID(), serviceUrl: service.url, token: result.token, user: result.user, expiresAt: result.expiresAt, projectSync: result.projectSync }
     try {
-      const user = await api.currentUser(service.url, session.token)
-      this.ensureCurrent(generation)
-      session.user = user
-      await this.write(async () => { this.ensureCurrent(generation); await writeSession(session) })
-    } catch (error) {
-      this.ensureCurrent(generation)
-      if (error instanceof ApiError && error.kind === 'auth') return this.expire(service, session, generation)
-      // 登录已经成功。头像/资料暂时不可用时保留已确认的身份，后续检查会刷新。
-    }
-    await this.write(async () => {
-      this.ensureCurrent(generation)
-      const unchanged = credentialEdit === (this.credentialEdits.get(service.url) ?? 0)
-      const shouldRemember = remember && (unchanged || (await readCredentials(service.url)).enabled)
-      await writeSuccessfulLogin(session, username.trim(), password, shouldRemember)
-    })
+      await this.write(async () => {
+        this.ensureCurrent(generation)
+        const unchanged = credentialEdit === (this.credentialEdits.get(service.url) ?? 0)
+        const shouldRemember = remember && (unchanged || (await readCredentials(service.url)).enabled)
+        this.ensureCurrent(generation)
+        await writeSuccessfulLogin(session, account.trim(), password, shouldRemember)
+      })
+    } finally { password = '' }
     const state = this.state(service, session, 'authenticated')
     this.verified.set(session.id, { at: Date.now(), state })
     return state
@@ -165,10 +155,10 @@ export class AuthManager {
     await this.service(serviceUrl)
     return readCredentials(serviceUrl)
   }
-
   async rememberPreference(serviceUrl: string, enabled: boolean) {
     await this.service(serviceUrl)
     this.credentialEdits.set(serviceUrl, (this.credentialEdits.get(serviceUrl) ?? 0) + 1)
     return this.write(async () => { await this.service(serviceUrl); return writeCredentialsPreference(serviceUrl, enabled) })
   }
+
 }

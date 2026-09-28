@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { Label } from 'reka-ui'
+import { useEnvironmentOptions } from '../../platforms/environmentOptions'
+import type { Environment, EnvironmentPage } from '../../api/nexofolio/environments'
 import { platformCommand } from '../../platforms/bridge'
 import { PLATFORM_STORAGE_PREFIX, type BoundProject, type PlatformCommand, type PlatformContext } from '../../platforms/contracts'
 import { matchesPath, normalizeScope } from '../../platforms/scope'
@@ -11,6 +13,7 @@ import ProjectPicker from '../components/ProjectPicker.vue'
 import { platformMenuKey } from '../../platforms/menu'
 import { useCapture } from '../../capture/useCapture'
 import CaptureFeed from '../components/CaptureFeed.vue'
+import PlatformBindingCard from '../components/PlatformBindingCard.vue'
 
 const context = ref<PlatformContext | null>(null)
 const loading = ref(true)
@@ -22,7 +25,11 @@ const prefix = ref('/')
 const draftName = ref('')
 const nameError = ref('')
 const nameRevision = ref(0)
-const step = ref<'scope' | 'project' | 'name' | null>(null)
+const step = ref<'scope' | 'project' | 'name' | 'environment' | null>(null)
+const environmentName = ref('')
+const environmentId = ref<string>()
+const environmentError = ref('')
+const environmentRevision = ref(0)
 const chosen = ref<BoundProject | null>(null)
 const panelRoot = ref<HTMLElement>()
 const menu = inject(platformMenuKey, null)
@@ -51,9 +58,12 @@ function accept(next: PlatformContext, reset: boolean) {
     prefix.value = next.rule?.prefix || '/'
     draftName.value = (next.rule?.name || next.page?.title || '').slice(0, 100)
     nameError.value = ''
+    environmentName.value = next.selected?.environmentName || ''
+    environmentId.value = next.selected?.environmentId
+    environmentError.value = ''
     chosen.value = null
     scopeError.value = ''
-    step.value = next.status === 'unauthorized' ? 'scope' : next.status === 'unbound' ? 'project' : null
+    step.value = next.status === 'unauthorized' ? 'scope' : next.status === 'unbound' ? 'project' : next.status === 'needs-environment' ? 'environment' : null
   }
 }
 async function refresh(reset = false) {
@@ -91,7 +101,7 @@ async function perform(command: PlatformCommand) {
       chosen.value = null
       step.value = 'project'
     }
-    if (command.type === 'platform.rename') step.value = null
+    if (command.type === 'platform.rename' || command.type === 'platform.environment') step.value = null
   } catch (cause) {
     if (!disposed && request === version) error.value = cause instanceof Error ? cause.message : '操作失败，请重试。'
   } finally {
@@ -114,7 +124,9 @@ async function authorize() {
   error.value = ''
   try {
     // Native permission must originate from this user gesture. Product consent is saved separately.
-    const allowed = await chrome.permissions.request({ origins: [serviceOriginPattern(current.origin)] })
+    // Request this platform's host only; no screenshot-specific permission.
+    const requested = await chrome.permissions.request({ origins: [serviceOriginPattern(current.origin)] })
+    const allowed = requested || await chrome.permissions.contains({ origins: [serviceOriginPattern(current.origin)] })
     if (!allowed) { error.value = '未获得访问许可。'; return }
     busy.value = false
     await perform({ type: 'platform.authorize', target: current, scope, name: draftName.value.trim() })
@@ -148,11 +160,45 @@ function rename() {
   if (!target.value || !context.value?.rule || busy.value || loading.value || !validateName()) return
   void perform({ type: 'platform.rename', target: target.value, ruleId: context.value.rule.id, name: draftName.value.trim() })
 }
+function editEnvironment() {
+  if (busy.value || loading.value || !context.value?.selected) return
+  environmentName.value = context.value.selected.environmentName || ''
+  environmentId.value = context.value.selected.environmentId
+  environmentError.value = ''
+  step.value = 'environment'
+  void focusEditor()
+}
+function validateEnvironment() {
+  environmentRevision.value++
+  environmentError.value = !!environmentName.value.trim() && [...environmentName.value.trim()].length <= 64 && !/[\u0000-\u001f\u007f]/.test(environmentName.value) ? '' : '环境名称需为1–64个字符，不含控制字符'
+  return !environmentError.value
+}
+function saveEnvironment() {
+  if (!target.value || !context.value?.rule || !context.value.selected || busy.value || loading.value || !validateEnvironment()) return
+  void perform({ type: 'platform.environment', target: target.value, ruleId: context.value.rule.id, projectId: context.value.selected.id, environmentName: environmentName.value.trim(), environmentId: environmentId.value })
+}
+const environmentProject = computed(() => step.value === 'project' ? chosen.value?.id : step.value === 'environment' ? context.value?.selected?.id : undefined)
+const {
+  options: environmentOptions, total: environmentTotal, loading: environmentLoading,
+  error: environmentListError, load: loadEnvironments, reset: resetEnvironmentOptions,
+} = useEnvironmentOptions(environmentProject, environmentId, environmentName,
+  (projectId, page) => platformCommand<EnvironmentPage>({ type: 'platform.environments', projectId, page }))
+function chooseEnvironment(value: Environment) { environmentName.value = value.name; environmentId.value = value.id; environmentError.value = '' }
+function editEnvironmentName() { environmentId.value = undefined; environmentError.value = '' }
+function selectBindingProject(project: BoundProject | null) {
+  const same = chosen.value?.id === project?.id
+  // Do not carry a previous project's environment, including saved selections.
+  environmentName.value = ''; environmentId.value = undefined; environmentError.value = ''
+  resetEnvironmentOptions()
+  chosen.value = project
+  if (same && project) void loadEnvironments()
+}
 function editProjects() {
   if (busy.value || loading.value) return
   step.value = 'project'
   prefix.value = context.value?.rule?.prefix || '/'
   chosen.value = null
+  environmentName.value = ''
   error.value = ''
   void focusEditor()
 }
@@ -171,8 +217,8 @@ async function back() {
   if (!disposed) panelRoot.value?.querySelector<HTMLElement>('h1')?.focus({ preventScroll: true })
 }
 function bind() {
-  if (!target.value || !chosen.value || busy.value || loading.value) return
-  void perform({ type: 'platform.bind', target: target.value, scope: { origin: target.value.origin, prefix: prefix.value }, project: chosen.value })
+  if (!target.value || !chosen.value || busy.value || loading.value || !validateEnvironment()) return
+  void perform({ type: 'platform.bind', target: target.value, scope: { origin: target.value.origin, prefix: prefix.value }, project: { ...chosen.value, environmentName: environmentName.value.trim(), environmentId: environmentId.value } })
 }
 function choose(project: BoundProject) {
   if (!target.value || !context.value?.rule || busy.value || loading.value) return
@@ -190,12 +236,16 @@ watchEffect(() => {
     canEditProjects: !!context.value?.rule?.authorized && context.value.status !== 'unauthorized',
     canEditScope: !!target.value,
     canEditName: !!target.value,
+    canEditEnvironment: !!context.value?.selected, editEnvironment,
     canUnbind: !!context.value?.selected,
     editProjects, editScope, editName, unbind,
   }
 })
-const activated = (info: chrome.tabs.TabActiveInfo) => { if (info.windowId === windowId) scheduleRefresh() }
-const updated = (_id: number, changes: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
+const activated = (info: Parameters<Parameters<typeof chrome.tabs.onActivated.addListener>[0]>[0]) => { if (info.windowId === windowId) scheduleRefresh() }
+const updated = (id: number, changes: Parameters<Parameters<typeof chrome.tabs.onUpdated.addListener>[0]>[1], tab: chrome.tabs.Tab) => {
+  if (id === target.value?.tabId && changes.favIconUrl !== undefined && context.value?.page) {
+    context.value = { ...context.value, page: { ...context.value.page, faviconUrl: changes.favIconUrl } }
+  }
   if (tab.windowId === windowId && tab.active && (changes.url !== undefined || changes.status === 'complete')) scheduleRefresh()
 }
 const removed = (tabId: number) => { if (tabId === target.value?.tabId) scheduleRefresh() }
@@ -229,13 +279,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section ref="panelRoot" class="platform-panel" aria-labelledby="account-title">
+  <section ref="panelRoot" class="platform-panel" :class="{ 'is-capture-view': !step && context?.status === 'bound' }" aria-labelledby="account-title">
     <button v-if="step" type="button" class="back-button platform-back" :disabled="busy" @click="back"><AppIcon name="arrowLeft" :size="14" />返回</button>
-    <div class="platform-relation">
-      <div class="platform-relation-side"><span>当前平台</span><h1 id="account-title" tabindex="-1" :title="platformName">{{ platformName }}</h1></div>
-      <AppIcon name="arrowRight" :size="14" />
-      <div class="platform-relation-side"><span>绑定项目</span><strong :title="projectLabel">{{ projectLabel }}</strong></div>
-    </div>
+    <PlatformBindingCard :favicon-url="target?.faviconUrl" :platform="platformName" :project="projectLabel" :environment="context?.selected?.environmentName" :active="capture.snapshot.value.status === 'listening'" />
     <p v-if="error" class="platform-error" role="alert">{{ error }}</p>
     <button v-if="!context && !loading" class="inline-button" type="button" @click="refresh(true)">重新读取<AppIcon name="arrowRight" :size="14" /></button>
     <p v-if="context?.status === 'unsupported'" class="platform-hint">请等待页面加载，或切换到 HTTP / HTTPS 网页。</p>
@@ -263,12 +309,35 @@ onBeforeUnmount(() => {
         </div>
         <button class="button primary" type="submit" :disabled="busy || loading">{{ busy ? '正在保存…' : '保存名称' }}<AppIcon name="check" :size="16" /></button>
       </form>
+      <form v-else-if="step === 'environment'" class="platform-form" novalidate @submit.prevent="saveEnvironment">
+        <h2>设置项目环境</h2>
+        <p class="platform-hint">{{ context?.selected?.name }} · 环境需由你明确指定。</p>
+        <div class="field">
+          <Label for="binding-environment">环境名称</Label>
+          <InputFeedback :error="environmentError" message-id="environment-error" :revision="environmentRevision"><input id="binding-environment" v-model="environmentName" :disabled="busy || loading" autocomplete="off" spellcheck="false" placeholder="例如 开发环境" @input="editEnvironmentName" /></InputFeedback>
+          <div v-if="environmentOptions.length" class="scope-options"><button v-for="option in environmentOptions" :key="option.id" type="button" class="scope-option" :disabled="busy || loading" @click="chooseEnvironment(option)">{{ option.name }}</button></div>
+        </div>
+        <p v-if="environmentListError" class="platform-hint">{{ environmentListError }} <button type="button" class="inline-button" :disabled="environmentLoading" @click="loadEnvironments()">重新读取</button></p>
+        <button v-if="environmentOptions.length < environmentTotal" type="button" class="inline-button" :disabled="environmentLoading" @click="loadEnvironments(true)">更多环境</button>
+        <button class="button primary" type="submit" :disabled="busy || loading">{{ busy ? '正在保存…' : '保存环境' }}<AppIcon name="check" /></button>
+      </form>
       <form v-else-if="step === 'project'" class="platform-form" novalidate @submit.prevent="bind">
         <div class="platform-section-heading"><h2>绑定 NexoFolio 项目</h2><button type="button" class="inline-button" :disabled="busy || loading" @click="editScope">修改范围</button></div>
         <p class="platform-scope">{{ target.origin }}{{ prefix }}</p>
-        <ProjectPicker :key="`${target.tabId}:${target.address}:${prefix}`" :disabled="busy || loading" @select="chosen = $event" />
+        <ProjectPicker :key="`${target.tabId}:${target.address}:${prefix}`" :disabled="busy || loading" @select="selectBindingProject" />
+        <template v-if="chosen">
+        <p v-if="environmentLoading" class="platform-hint" role="status">正在加载 {{ chosen.name }} 的环境…</p>
+        <p v-else-if="!environmentOptions.length && !environmentListError" class="platform-hint">该项目暂无环境，可填写名称。</p>
+        <div class="field">
+          <Label for="project-environment">环境名称</Label>
+          <InputFeedback :error="environmentError" message-id="project-environment-error" :revision="environmentRevision"><input id="project-environment" v-model="environmentName" :disabled="busy || loading" autocomplete="off" spellcheck="false" placeholder="例如 开发环境" @input="editEnvironmentName" /></InputFeedback>
+          <div v-if="environmentOptions.length" class="scope-options"><button v-for="option in environmentOptions" :key="option.id" type="button" class="scope-option" :disabled="busy || loading" @click="chooseEnvironment(option)">{{ option.name }}</button></div>
+        </div>
+        <p v-if="environmentListError" class="platform-hint">{{ environmentListError }} <button type="button" class="inline-button" :disabled="environmentLoading" @click="loadEnvironments()">重新读取</button></p>
+        <button v-if="environmentOptions.length < environmentTotal" type="button" class="inline-button" :disabled="environmentLoading" @click="loadEnvironments(true)">更多环境</button>
+        </template>
         <p v-if="context?.rule?.prefix === prefix && context.rule.projects.length" class="platform-hint">添加项目不会覆盖此范围已有的绑定。</p>
-        <button class="button primary" type="submit" :disabled="busy || loading || !chosen">{{ busy ? '正在绑定…' : '保存绑定' }}<AppIcon name="check" /></button>
+        <button class="button primary" type="submit" :disabled="busy || loading || !chosen || !environmentName.trim()">{{ busy ? '正在绑定…' : '保存绑定' }}</button>
       </form>
       <div v-else-if="context?.status === 'ambiguous'" class="platform-form">
         <h2>选择当前项目</h2>
@@ -281,9 +350,10 @@ onBeforeUnmount(() => {
       <div v-else-if="context?.status === 'unauthorized' || context?.status === 'unbound'" class="platform-form">
         <button type="button" class="button primary" :disabled="busy || loading" @click="context.status === 'unauthorized' ? editScope() : editProjects()">{{ context.status === 'unauthorized' ? '授权并绑定' : '选择绑定项目' }}<AppIcon name="arrowRight" :size="16" /></button>
       </div>
+      <button v-if="!step && context?.status === 'needs-environment'" class="button primary" type="button" @click="editEnvironment">补齐环境</button>
     </template>
-    <div class="capture-history">
-      <CaptureFeed :snapshot="capture.snapshot.value" :detail="capture.detail.value" @select="capture.requestDetail" @retry="capture.retry" />
+    <div v-show="context?.status === 'bound' && !step" class="capture-history">
+      <CaptureFeed :snapshot="capture.snapshot.value" @retry="capture.retry" />
     </div>
   </section>
 </template>

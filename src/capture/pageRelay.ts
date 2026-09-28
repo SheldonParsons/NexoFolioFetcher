@@ -7,6 +7,7 @@ export function installPageRelay(options: PageCaptureOptions): Promise<boolean> 
   try { (host[slot] as { stop?: () => void })?.stop?.() } catch {}
   return new Promise(resolve => {
     let port: chrome.runtime.Port
+    let draining = false
     let stopped = false, ready = false, settled = false
     let heartbeat = 0, timeout = 0
     const post = (type: string, extra: object = {}) => window.postMessage({ direction: 'fetcher-control-v2', nonce: options.nonce, type, ...extra }, '*')
@@ -23,8 +24,14 @@ export function installPageRelay(options: PageCaptureOptions): Promise<boolean> 
       if (host[slot] === controller) delete host[slot]
       settle(false)
     }
-    const current = () => location.href === options.url && document.visibilityState !== 'hidden'
-    const visibility = () => { if (!current()) stop() }
+    const current = () => {
+      const scope = options.scope
+      const matches = (prefix: string) => prefix === '/' || location.pathname === prefix || location.pathname.startsWith(prefix + '/')
+      const inScope = scope ? location.origin === scope.origin && matches(scope.prefix) && !scope.excludedPrefixes.some(matches) : location.href === options.url
+      return inScope && document.visibilityState !== 'hidden'
+    }
+    const suspend = () => { if (draining) return; draining = true; post('suspend'); try { port.postMessage({ type: 'suspended', nonce: options.nonce }) } catch {} }
+    const visibility = () => { if (!current()) suspend() }
     const headers = (value: any) => {
       if (!value || !['page-visible', 'truncated', 'unreadable'].includes(value.state) || typeof value.message !== 'string' || value.message.length > 512 || !Array.isArray(value.entries) || value.entries.length > 256) return null
       let size = 0
@@ -45,16 +52,23 @@ export function installPageRelay(options: PageCaptureOptions): Promise<boolean> 
       return { state: value.state, encoding: value.encoding, body: value.body, bytes: value.bytes, contentType: value.contentType, message: value.message }
     }
     const receive = (event: MessageEvent) => {
-      if (stopped || !ready || event.source !== window || event.data?.direction !== 'fetcher-data-v2' || event.data?.nonce !== options.nonce) return
-      if (!current()) { stop(); return }
+      if (stopped || !ready || event.source !== window || event.data?.nonce !== options.nonce) return
+      if (event.data?.direction === 'fetcher-evidence-v3') {
+        if (!draining && current()) { try { port.postMessage({type:'evidence',nonce:options.nonce,sample:event.data.sample}) } catch { stop() } }
+        return
+      }
+      if (event.data?.direction !== 'fetcher-data-v2') return
+      if (!current()) suspend()
       const data = event.data.payload
+      if (data?.kind === 'capacity') { try { port.postMessage({ type: 'capacity', nonce: options.nonce }) } catch { stop() }; return }
       if (!data || typeof data !== 'object' || typeof data.requestId !== 'string' || !/^\d{1,16}$/.test(data.requestId)) return
       let payload: object
       if (data.kind === 'request') {
+        if (draining || !current()) return
         if (typeof data.url !== 'string' || data.url.length > 16384 || typeof data.method !== 'string' || data.method.length > 32 || !['XHR', 'Fetch'].includes(data.type)) return
         const request = data.request, requestHeaders = headers(request?.headers), requestBody = body(request?.body)
         if (!requestHeaders || !requestBody || typeof request.url !== 'string' || request.url.length > options.maxBytes || typeof request.urlTruncated !== 'boolean') return
-        payload = { kind: data.kind, requestId: data.requestId, url: data.url, method: data.method, type: data.type,
+        payload = { context: data.context, sourcePage: data.context?.page_url || location.href, kind: data.kind, requestId: data.requestId, url: data.url, method: data.method, type: data.type,
           request: { url: request.url, urlTruncated: request.urlTruncated, headers: requestHeaders, body: requestBody } }
       } else if (data.kind === 'request-body') {
         const requestBody = body(data.body)
@@ -71,7 +85,7 @@ export function installPageRelay(options: PageCaptureOptions): Promise<boolean> 
             || typeof response.url !== 'string' || response.url.length > 16384
             || typeof response.contentType !== 'string' || response.contentType.length > 256
             || typeof response.statusText !== 'string' || response.statusText.length > 128) return
-        payload = { kind: data.kind, requestId: data.requestId, response: {
+        payload = { context: data.context, kind: data.kind, requestId: data.requestId, response: {
           state: response.state, status: response.status, statusText: response.statusText, contentType: response.contentType,
           url: response.url, encoding: response.encoding, bytes: response.bytes, message: response.message, body: response.body, headers: responseHeaders,
         } }
@@ -86,6 +100,8 @@ export function installPageRelay(options: PageCaptureOptions): Promise<boolean> 
       port.onDisconnect.addListener(() => { void chrome.runtime.lastError; stop() })
       port.onMessage.addListener(message => {
         if (message?.type === 'ready') { ready = true; clearTimeout(timeout); settle(true) }
+        else if (message?.type === 'credit') post('credit', { count: message.count })
+        else if (message?.type === 'suspend') suspend()
         else if (message?.type === 'stop') stop()
         else if (message?.type === 'drop' && typeof message.requestId === 'string') post('drop', { requestId: message.requestId })
       })
@@ -94,7 +110,7 @@ export function installPageRelay(options: PageCaptureOptions): Promise<boolean> 
       document.addEventListener('visibilitychange', visibility)
       timeout = window.setTimeout(stop, 5000)
       heartbeat = window.setInterval(() => {
-        if (!current()) { stop(); return }
+        if (!current()) suspend()
         try { port.postMessage({ type: 'heartbeat', nonce: options.nonce }); post('renew') } catch { stop() }
       }, 5000)
       port.postMessage({ type: 'hello', nonce: options.nonce })

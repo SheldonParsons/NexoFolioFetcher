@@ -3,7 +3,7 @@ export interface ServiceConfig {
   url: string
 }
 
-export const SERVICE_STORAGE_KEY = 'asynctest.service.v1'
+export const SERVICE_STORAGE_KEY = 'nexofolio.service.v1'
 
 export function normalizeServiceUrl(input: string): string {
   const value = input.trim()

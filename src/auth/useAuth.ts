@@ -1,5 +1,5 @@
 import { onBeforeUnmount, ref } from 'vue'
-import { ApiError } from '../api/asynctest/client'
+import { ApiError } from '../api/nexofolio/client'
 import { SERVICE_STORAGE_KEY, type ServiceConfig } from '../settings/service'
 import { authCommand } from './bridge'
 import { AUTH_STORAGE_PREFIX, serviceOriginPattern, type AuthCommand, type AuthState } from './contracts'
@@ -49,10 +49,10 @@ export function useAuth(events: { onLoginSuccess?: (state: AuthState) => void } 
     } finally { busy.value = false; loading.value = false }
   }
 
-  async function login(username: string, password: string, remember: boolean) {
+  async function login(account: string, password: string, remember: boolean) {
     const service = state.value.service
     if (!service) { error.value = '请先配置 NexoFolio 服务。'; return false }
-    if (!username.trim() || !password) { error.value = '请输入账号和密码。'; return false }
+    if (!account.trim() || !password) { error.value = '请输入账号和密码。'; return false }
     if (busy.value) return false
     // 必须直接从用户点击发起；不能先 await 后再请求 Chrome 权限。
     busy.value = true
@@ -63,7 +63,7 @@ export function useAuth(events: { onLoginSuccess?: (state: AuthState) => void } 
     } catch { error.value = '无法获取服务访问权限，请刷新扩展后重试。'; return false }
     finally { busy.value = false }
     if (disposed) return false
-    return perform({ type: 'auth.login', serviceUrl: service.url, username, password, remember })
+    return perform({ type: 'auth.login', serviceUrl: service.url, account, password, remember })
   }
 
   async function retry() {

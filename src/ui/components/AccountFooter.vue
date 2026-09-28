@@ -35,6 +35,7 @@ const platformMenu = inject(platformMenuKey, null)
             <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditName" @select="platformMenu.editName()"><AppIcon name="settings" :size="16" />修改平台名称</DropdownMenuItem>
             <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditProjects" @select="platformMenu.editProjects()"><AppIcon name="settings" :size="16" />调整 / 添加项目</DropdownMenuItem>
             <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditScope" @select="platformMenu.editScope()"><AppIcon name="globe" :size="16" />为当前路径单独绑定</DropdownMenuItem>
+            <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditEnvironment" @select="platformMenu.editEnvironment()"><AppIcon name="settings" :size="16" />设置当前环境</DropdownMenuItem>
             <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canUnbind" @select="platformMenu.unbind()"><AppIcon name="logout" :size="16" />解除当前项目绑定</DropdownMenuItem>
           </template>
         </DropdownMenuContent>

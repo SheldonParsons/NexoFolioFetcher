@@ -77,9 +77,9 @@ async function persist(config: ServiceConfig) {
   }
 }
 
-async function login(username: string, password: string, remember: boolean) {
+async function login(account: string, password: string, remember: boolean) {
   if (transitioning.value) return
-  if (await auth.login(username, password, remember)) page.value = state.value.user ? 'account' : 'login'
+  if (await auth.login(account, password, remember)) page.value = state.value.user ? 'account' : 'login'
 }
 
 async function logout() {

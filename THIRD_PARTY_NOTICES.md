@@ -6,3 +6,5 @@
 - `public/nexofolio-icon.svg` is the unchanged owner-supplied NexoFolio icon: https://asynctest.oss-cn-shenzhen.aliyuncs.com/nexofolio_fetcher/nexofolio-icon.svg. Local PNG manifest icons are generated from it.
 - `public/nexofolio-logo-wordmark.svg` is the unchanged owner-supplied icon and outlined wordmark: https://asynctest.oss-cn-shenzhen.aliyuncs.com/nexofolio_fetcher/nexofolio-logo-wordmark.svg. `src/ui/motion/nexofolioGeometry.ts` preserves its paths. Native animation adapted from the owner-supplied MOTION STUDY / 04 (2026-09-14), with the existing product glow retained.
 - `FetcherMark.vue` and `ui/motion/fetcherMotion.ts` adapt the user-approved local `login-clear-spectrum-motion.html` preview and the same supplied Fetcher SVG geometry. Preview controls/captions are not included. The original SVG asset is unchanged.
+
+- Ingestion JSON Schema validators are compiled locally with AJV and ajv-formats; runtime helpers include fast-deep-equal. Their licenses are bundled in third-party-licenses.txt. The pinned schemas and fixtures come from the NexoFolio backend repository.

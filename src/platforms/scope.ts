@@ -1,4 +1,4 @@
-import { ApiError } from '../api/asynctest/client'
+import { ApiError } from '../api/nexofolio/client'
 import type { PlatformRule, PlatformScope } from './contracts'
 
 export function normalizeScope(origin: string, prefix: string): PlatformScope {

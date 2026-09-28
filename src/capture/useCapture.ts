@@ -1,4 +1,5 @@
 import { onBeforeUnmount, onMounted, shallowRef } from 'vue'
+import { APP_PROTOCOL } from '../auth/contracts'
 import { CAPTURE_PORT, type CaptureSnapshot, type CaptureDetail } from './contracts'
 
 export function useCapture() {
@@ -43,7 +44,7 @@ export function useCapture() {
     snapshot.value = { ...snapshot.value, status: 'checking', message: '正在连接捕获模块…' }
     try {
       // Wake the worker and confirm this build has a ready receiver before creating a long-lived port.
-      const reply = await chrome.runtime.sendMessage({ type: 'capture.ready' })
+      const reply = await chrome.runtime.sendMessage({ type: 'capture.ready', protocol: APP_PROTOCOL })
       if (disposed || request !== generation) return
       if (!reply?.ok || !reply.data?.ready || reply.data.protocol !== CAPTURE_PORT) {
         snapshot.value = { ...snapshot.value, status: 'error', message: reply?.data?.message || reply?.error?.message || '后台尚未加载捕获模块，请刷新扩展并重新打开 panel。' }

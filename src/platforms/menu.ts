@@ -6,6 +6,8 @@ export interface PlatformMenu {
   canEditProjects: boolean
   canEditScope: boolean
   canEditName: boolean
+  canEditEnvironment: boolean
+  editEnvironment: () => void
   canUnbind: boolean
   editProjects: () => void
   editScope: () => void
