@@ -1,5 +1,5 @@
 import { ApiError, object, isUuid } from '../api/nexofolio/client'
-import { listEnvironments, selectedEnvironment, createEnvironment, type Environment } from '../api/nexofolio/environments'
+import { listEnvironments, selectedEnvironment, createEnvironment } from '../api/nexofolio/environments'
 import { listProjects, requireProject } from '../api/nexofolio/projects'
 import type { AuthManager } from '../auth/manager'
 import { serviceOriginPattern } from '../auth/contracts'
@@ -143,24 +143,6 @@ export class PlatformManager {
   }
   environments(projectId: string, page: number) {
     return this.auth.withSession(access => listEnvironments(access.service.url, access.token, projectId, page))
-  }
-  cacheEnvironment(destination: { serviceUrl: string; userId: string; projectId: string; environment: { id: string } | { name: string } }, environment: Environment) {
-    return this.serialize(async () => {
-      // Update only future binding snapshots for the exact owner/project/name; queued items are immutable.
-      const key = PLATFORM_STORAGE_PREFIX + encodeURIComponent(destination.serviceUrl) + ':' + destination.userId
-      const value = (await chrome.storage.local.get(key))[key]
-      if (!Array.isArray(value)) return
-      let changed = false
-      for (const rule of value) for (const project of rule.projects || []) {
-        if (project.id !== destination.projectId) continue
-        const matches = 'id' in destination.environment ? project.environmentId === destination.environment.id
-          : !project.environmentId && project.environmentName === destination.environment.name
-        if (matches && (project.environmentId !== environment.id || project.environmentName !== environment.name)) {
-          project.environmentId = environment.id; project.environmentName = environment.name; changed = true
-        }
-      }
-      if (changed) await chrome.storage.local.set({ [key]: value })
-    })
   }
   environment(expected: PageTarget, ruleId: string, projectId: string, value: string, environmentId?: string) {
     return this.serialize(() => this.auth.withSession(async access => {

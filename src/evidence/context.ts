@@ -1,4 +1,4 @@
-// Internal capture context. Wire projection waits for the authoritative v3 bundle.
+// Internal capture context; upload/converter.ts projects it onto the collect v1 record context.
 export interface EvidenceContext {
   browser_instance_id: string
   page_instance_id: string
@@ -18,3 +18,6 @@ export type EvidenceSample = {
   data: Record<string, unknown>
 }
 export interface EvidenceOptions { nonce: string }
+export function validObservedTime(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000
+}

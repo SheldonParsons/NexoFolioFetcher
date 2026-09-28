@@ -27,7 +27,7 @@ export default defineBackground(() => {
   const storageReady = initializeNexoFolio().then(async () => {
     auth = new AuthManager()
     platforms = new PlatformManager(auth)
-    const uploads = new UploadManager(auth, (destination, environment) => platforms.cacheEnvironment(destination, environment))
+    const uploads = new UploadManager()
     const queueReady = await uploads.ready.then(() => true, () => false)
     if (queueReady) uploads.enableTransport()
     if (!queueReady) { captureError = '上传队列无法读取，采集已暂停；登录与服务设置仍可使用。' }

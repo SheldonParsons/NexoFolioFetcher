@@ -9,16 +9,13 @@ import { installPageRelay, stopPageRelay } from './pageRelay'
 import { parseInput, parseBody, parseHeaders } from './requestData'
 import { UploadManager } from '../upload/manager'
 import type { Destination, Observation } from '../upload/contracts'
-import { evidenceRecord, elementFrom, pagePayload, validObservedTime } from '../evidence/convert'
 import { CaptureIdentity } from '../evidence/identity'
-import { validateCaptureContext, validateCaptureRecord } from '../contracts/ingestion/validators.js'
-import { encodedSize } from '../upload/contracts'
 import { installPageSampler } from '../evidence/pageSampler'
-import type { EvidenceContext, ContextSeed } from '../evidence/context'
+import { validObservedTime, type EvidenceContext, type ContextSeed } from '../evidence/context'
 import { matchesPath } from '../platforms/scope'
 
 type Peer = { port: chrome.runtime.Port; windowId?: number; visible: boolean; detailId?: number }
-type Frame = { eventSequences: Map<string,number>; title?: string; seed: ContextSeed; lastContext?: EvidenceContext; reservations: string[]; id: number; documentId: string; nonce: string; url: string; port?: chrome.runtime.Port; installed: boolean }
+type Frame = { eventSequences: Map<string,number>; title?: string; seed: ContextSeed; reservations: string[]; id: number; documentId: string; nonce: string; url: string; port?: chrome.runtime.Port; installed: boolean }
 type RunningCapture = { destination: Destination; scope: CaptureScope; key: string; tabId: number; windowId: number; url: string; documentId: string; accepting: boolean; frames: Map<number, Frame>; refreshing: boolean }
 type RecordEntry = { context?: EvidenceContext; queueId: string; destination: Destination; sourcePage: string; savingTerminal?: boolean; request: CapturedInput; row: CapturedRequest; response: CapturedResponse; frame: Frame; requestId: string }
 const emptyResponse = (): CapturedResponse => ({ state: 'pending', status: null, statusText: '', contentType: '', url: '', encoding: 'none', bytes: 0, message: '', body: '', headers: { entries: [], state: 'unreadable', message: '等待响应头。' } })
@@ -29,7 +26,6 @@ export class CaptureManager {
   private peers = new Set<Peer>()
   private active: RunningCapture | null = null
   private identity = new CaptureIdentity()
-  private gapKeys = new Set<string>()
   private retired = new Set<RunningCapture>()
   private retireTimers = new Map<RunningCapture, ReturnType<typeof setTimeout>>()
   private entries: RecordEntry[] = []
@@ -177,9 +173,9 @@ export class CaptureManager {
         const data = object(message.data)
         if (data.kind !== 'request' || (this.active === run && run.accepting)) this.receive(frame, data, run)
       } else if (accepted && message.type === 'evidence' && this.active === run && run.accepting) {
-        void this.receiveEvidence(run, frame, message.sample).catch(() => this.recordGap(run, frame, 'EVIDENCE_INVALID'))
+        this.receiveEvidence(run, frame, message.sample)
       } else if (accepted && message.type === 'suspended' && this.active === run) { this.reconcileSoon(true) }
-      else if (accepted && message.type === 'capacity') { void this.recordGap(run,frame,'QUEUE_CAPACITY'); this.message = '上传队列容量不足或处理中，新增采集已暂停。'; this.publish() }
+      else if (accepted && message.type === 'capacity') { this.message = '上传队列容量不足或处理中，新增采集已暂停。'; this.publish() }
     })
     port.onDisconnect.addListener(() => {
       void chrome.runtime.lastError; clearTimeout(timer)
@@ -281,7 +277,6 @@ export class CaptureManager {
       for (const id of frame.reservations) this.uploads.release(id)
       frame.reservations = []
       if (frame.port) this.send(frame.port, { type: 'suspend' })
-      void this.recordGap(run, frame, 'CAPTURE_INTERRUPTED')
     }
     // Continue only already-started HTTP under its original frozen binding/context.
     const timer = setTimeout(() => {
@@ -323,7 +318,7 @@ export class CaptureManager {
       this.detach(); this.setStatus('checking', '等待主页面加载完成…'); return
     }
     if (!context.selected.environmentName && !context.selected.environmentId) { this.detach(); this.setStatus('stopped', '请先补齐当前项目环境。'); return }
-    const queueDestination: Destination = { ...destination, projectId: context.selected.id, environment: context.selected.environmentId ? { id: context.selected.environmentId } : { name: context.selected.environmentName! } }
+    const queueDestination: Destination = { ...destination, projectId: context.selected.id, environment: context.selected.environmentId ? { id: context.selected.environmentId } : { name: context.selected.environmentName! }, site: { origin: scope.origin, prefix: scope.prefix } }
     const key = JSON.stringify([owner, tab.id, document.documentId, context.rule.id, context.selected.id, scope, queueDestination])
     if (this.active?.key === key && this.active.accepting) { this.active.url = tab.url; await this.refreshFrames(this.active); this.publish(); return }
     this.detach()
@@ -378,12 +373,9 @@ export class CaptureManager {
           const result = injected[0]?.result
           frame.installed = !!(result?.fetch || result?.xhr)
           if (!result?.fetch || !result?.xhr) partial = true
-          if (!frame.installed) { this.stopFrame(run, frame); void this.recordGap(run, frame, 'FRAME_UNAVAILABLE') }
-          else {
-            void this.recordGap(run, frame, 'DOCUMENT_START_NOT_COVERED')
-            const sampled = await chrome.scripting.executeScript({ target, world: 'MAIN', func: installPageSampler, args: [{nonce:frame.nonce}] }).catch(() => [])
-            if (!sampled[0]?.result) void this.recordGap(run, frame, 'FRAME_UNAVAILABLE')
-          }
+          if (!frame.installed) this.stopFrame(run, frame)
+          // The sampler only supplies the page title and interaction ids; capture works without it.
+          else await chrome.scripting.executeScript({ target, world: 'MAIN', func: installPageSampler, args: [{nonce:frame.nonce}] }).catch(() => [])
         } catch { this.stopFrame(run, frame); partial = true }
       }
       if (this.active === run && run.accepting && run.frames.get(0)?.installed) this.setStatus('listening', partial ? '正在采集响应；部分页面框架未覆盖。' : '正在采集 XHR / fetch 响应')
@@ -392,48 +384,30 @@ export class CaptureManager {
   private captureContext(frame:Frame,value:unknown,allocate=true):EvidenceContext|undefined {
     const raw=object(value)
     if(!isUuid(raw.view_id)||!Number.isSafeInteger(raw.event_seq)||Number(raw.event_seq)<0||typeof raw.page_url!=='string')return undefined
-    const context={...raw,...frame.seed,view_id:raw.view_id} as unknown as EvidenceContext
-    if(!validateCaptureContext(context))return undefined
+    if(raw.interaction_id!==undefined&&!isUuid(raw.interaction_id))return undefined
+    for(const time of [raw.request_started_at_ms,raw.response_completed_at_ms])if(time!==undefined&&!validObservedTime(time))return undefined
+    const context:EvidenceContext={
+      ...frame.seed,view_id:raw.view_id,event_seq:raw.event_seq as number,page_url:raw.page_url,
+      ...(raw.interaction_id?{interaction_id:raw.interaction_id as string}:{}),
+      ...(raw.request_started_at_ms!==undefined?{request_started_at_ms:raw.request_started_at_ms as number}:{}),
+      ...(raw.response_completed_at_ms!==undefined?{response_completed_at_ms:raw.response_completed_at_ms as number}:{}),
+    }
     if(allocate) {
       context.event_seq=(frame.eventSequences.get(context.view_id)||0)+1
       frame.eventSequences.set(context.view_id,context.event_seq)
       while(frame.eventSequences.size>100)frame.eventSequences.delete(frame.eventSequences.keys().next().value!)
-      frame.lastContext=context
     }
     return context
   }
-  private async recordGap(run:RunningCapture,frame:Frame,reason:string) {
-    const key=frame.nonce+reason
-    if(this.gapKeys.has(key))return
-    this.gapKeys.add(key);if(this.gapKeys.size>500)this.gapKeys.delete(this.gapKeys.values().next().value!)
-    // The background allocates all final sequence numbers, including synthetic gaps.
-    const { interaction_id, request_started_at_ms, response_completed_at_ms, ...backgroundContext } = frame.lastContext || {...frame.seed,event_seq:0,page_url:frame.url}
-    const context=this.captureContext(frame,backgroundContext)!
-    try {await this.uploads.saveEvidence(run.destination,evidenceRecord('page_context',context,pagePayload(context.page_url,frame.title||'',[reason]),Date.now()))}
-    catch {this.message='证据队列容量不足，采集缺口未能落盘。';this.publish()}
-  }
-  private async receiveEvidence(run:RunningCapture,frame:Frame,value:unknown) {
+  // Page samples are no longer uploaded; only the title is kept to label the HTTP records of this frame.
+  private receiveEvidence(run:RunningCapture,frame:Frame,value:unknown) {
     if(this.active!==run||!run.accepting)return
-    const sample=object(value),context=this.captureContext(frame,sample.context),data=object(sample.data)
-    if(!context||!validObservedTime(sample.observed_at_ms)||encodedSize(data)>2*1024*1024)return
-    const observedAt=sample.observed_at_ms
-    const limitations=Array.isArray(data.limitations)?data.limitations.filter((value):value is string=>typeof value==='string'&&value.length<=128).slice(0,16):[]
-    let record:ReturnType<typeof evidenceRecord>
-    if(sample.kind==='page_context') { frame.title=String(data.title||''); record=evidenceRecord('page_context',context,pagePayload(context.page_url,String(data.title||''),['VISIBLE_PAGE_CONTEXT_ONLY',...limitations]),observedAt) }
-    else if(sample.kind==='interaction') {
-      if(!['click','change','submit'].includes(String(data.type))||!data.target)return
-      record=evidenceRecord('interaction',context,{action:data.type,target:elementFrom(data.target),complete:false,limitations:['VISIBLE_DOM_ONLY','UI_VALUES_MAY_BE_TRUNCATED',...limitations,...(data.trusted===true?[]:['PROGRAMMATIC_EVENT'])]},observedAt)
-    } else if(sample.kind==='ui_snapshot') {
-      if(!Array.isArray(data.controls)||data.controls.length>80)return
-      record=evidenceRecord('ui_snapshot',context,{elements:data.controls.map(elementFrom),complete:false,limitations:['VISIBLE_DOM_ONLY','OPTIONS_MAY_BE_PARTIAL','UI_VALUES_MAY_BE_TRUNCATED',...limitations,...(data.truncated?['ELEMENT_LIMIT']:[])]},observedAt)
-    } else return
-    if(!validateCaptureRecord(record))return
-    try {
-      await this.uploads.saveEvidence(run.destination,record)
-    } catch {this.message='证据队列无法保存，已暂停新增采集。';this.detach(run);this.publish()}
+    const sample=object(value)
+    if(sample.kind!=='page_context'||!this.captureContext(frame,sample.context,false))return
+    frame.title=String(object(sample.data).title||'').slice(0,1024)
   }
   private observation(entry: RecordEntry): Observation {
-    return { context: entry.context, request: entry.request, response: entry.response, method: entry.row.method, time: entry.row.time, sourcePage: entry.sourcePage, transport: entry.row.type === 'XHR' ? 'xhr' : 'fetch', frame: entry.row.frame }
+    return { context: entry.context, title: entry.frame.title, request: entry.request, response: entry.response, method: entry.row.method, time: entry.row.time, sourcePage: entry.sourcePage, transport: entry.row.type === 'XHR' ? 'xhr' : 'fetch', frame: entry.row.frame }
   }
   private persist(entry: RecordEntry) {
     const terminal = entry.request.body.state !== 'reading' && !['pending','reading'].includes(entry.response.state)

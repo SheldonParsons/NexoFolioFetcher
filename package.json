@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "wxt",
-    "build": "node scripts/build-ingestion-contract.mjs && node scripts/build-icons.mjs && wxt build",
+    "build": "node scripts/build-collect-contract.mjs && node scripts/build-icons.mjs && wxt build",
+    "contract:sync": "node scripts/build-collect-contract.mjs ../NexoFolio/contracts/collect/v1",
     "package:dev": "npm run build && python3 scripts/package-release.py",
     "typecheck": "wxt prepare && vue-tsc --noEmit",
     "postinstall": "wxt prepare",

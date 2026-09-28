@@ -115,26 +115,28 @@ Chrome 的用户设置决定侧边栏位于左侧还是右侧，界面按右侧�
 - `GET /v1/projects?page=...&limit=50` 读取 `{items,page,limit,total}`，按实际分页和 total 加载。后端不支持 search 参数，因此输入框只筛选已加载项目，加载更多可继续补充结果。
 - 卡片保留 status、can_access、access_state、reason_code。closed/wait 不自动判无权限，按 can_access 控制选择。
 - `GET /v1/projects/{UUID}` 是绑定和恢复准入校验，不再按名字搜索项目。403/PROJECT_ACCESS_DENIED、503/PROJECT_ACCESS_UNAVAILABLE 分别展示准确提示；无权限不能写绑定。
-- 上传使用内部登录 Token 调用 /v1/ingestion/capabilities 和 /v1/ingestion/batches；独立项目同步和 MCP Token 签发仍不调用。内部登录 Token 不用作 MCP Token。
+- 上传调用 `POST /v1/collect/batches`，不带登录 Token：批次自带项目/环境/站点，服务端只校验。登录只用于选项目和环境；退出或换账号不影响已入队记录的上传。内部登录 Token 不用作 MCP Token。
 
 ## 环境与持久上传队列
 
 范围（domain + path，通常为 /）先选项目，再立即加载该项目环境。无项目或无权限项目不查询环境；切项目清空不适用的旧选择，迟到的旧响应不会回灌。环境与项目绑定一起保存：支持手填中文名称（1–64 Unicode 字符，不含控制字符）或通过 `/v1/projects/{UUID}/environments` 分页选择已有环境。名称不能由 domain 推断，旧绑定没有环境时必须补齐。选择环境保存稳定 ID；手填名称在保存绑定时创建或复用环境，再保存 ID。按名称的旧队列上传后，也可从可信回执缓存解析后的 ID 供未来观测使用。改名后使用稳定 ID，不改写任何已入队观测。没有额外接口服务标识；多个 domain 可共用同一项目和环境。旧绑定升级只移除 service 字段，不清理范围、项目、环境或用户数据。
 
-契约固定在 `src/contracts/ingestion/`，来自后端权威 bundle；构建校验 manifest SHA-256 并用 AJV 生成静态校验器，运行时不使用动态 eval。新记录使用 `src/contracts/capture/` 固定v3合同，旧v1/v2合同仍保留。v3不含service_key，兼容HTTP payload_version=1，支持页面/交互/UI样例/图像引用；HTTP记录为 `http_exchange`，环境精确使用 `{id}` 或 `{name}`，不携带接口历史版本作为判重范围。`legacy/v1` 保留原Schema，旧队列按原版本/原ID/原内容重试；新旧记录不混批，后端判重均不再按service分区。
+契约固定在 `src/contracts/collect/`，是后端 `contracts/collect/v1` 的副本（`npm run contract:sync` 从相邻的 NexoFolio 仓库同步）。构建校验 manifest SHA-256，用 AJV 核对全部 fixtures 与 Schema 判定一致，再生成静态校验器；批次上限也从 manifest 读取，运行时不使用动态 eval。
 
-- IndexedDB `nexofolio-upload-v1` 分别保存 draft、终态观测、批次、producer UUID和独立assets存储。数据库从版本1非破坏升级至2，不清旧v1/v2队列。原始数据不脱敏，正文、业务凭据和内部 Token 不打印到日志或公开 fixtures。队列状态由接口行的黑白方格流动背景表示：采集/待上传轻动、实际发送增强、接收确认后填满淡出；不展示伪百分比。失败保留细纹理，列表标题的提示图标可查看错误/保留数量，取消常驻待上传/全部交付文案。窗口激活状态以绑定卡片背景和微小指示点区分。
-- 每条终态首次转换时生成 UUID `record_id`，固化时间、payload、项目/环境与所属后端/账号；重试不能改写。先落盘再发，批次 UUID 在组批时持久化；原批重试复用，413 重组批保留 record_id。
-- 20条或4MiB或首条就绪后约1秒触发组批；后端上限50条/8MiB批次/4MiB单条，按 UTF-8 JSON 字节计量，不截断来凑上限。超限或不符合契约的观测保留 failed，不能偷偷删除。
-- 回执必须通过 Schema、batch ID、逐条 index/record ID、环境校验。只有 accepted/ignored 清除对应待上传项；缺项、错误回执、超时、503、429 保留原批，429 遵守 Retry-After。403 保留 Token 和队列，401暂停认证；永久 rejected 保留失败项。accepted 仅表示可靠收讫，不表示文档生成或裁决完成。v3回执使用observation_id，不把结构重复与证据收讫混为一谈。
-- 队列本地上限256MiB/5000条（失败项也占容量），每个已开始观测预留最坏编码空间48MiB。页面通过容量 credit 开始采集；容量/存储不可用则暂停新增，业务请求照常执行。正在读取的集合与 UI20 独立；界面淘汰不取消 body。系统级进程崩溃前尚未成功落盘的事件仍不能保证恢复，持久 draft 在冷启动时以明确 unreadable 状态结算，不能假装 complete。
-- 每30秒 alarms 唤醒检查待上传队列，且有前台定时 flush。上传只使用与队列所属后端、用户 UUID 匹配的当前会话；换账号/后端暂停旧队列，不借用新用户凭据。恢复不自动重发密码。已有迁移标记不变，不为本次功能再次清数据。
+- 每条 HTTP 记录是 `http_exchange` version 1：请求/响应原样上传，不脱敏、不改写 URL、不为凑上限截断。采集状态映射为 full/truncated/unreadable/none；超时或读不到的正文标为 unreadable 并在 note 写原因，页面看不到的请求头（Cookie 等）标 partial。页面 URL、标题、producer UUID、page/frame/view、操作 ID、序号和起止时间放在 context。
+- 批次 target 为项目、环境（`{id}` 或 `{name}`，按名称时服务端自动创建）和采集站点（origin + prefix）；同一 target 的记录才同批。
+- IndexedDB `nexofolio-upload-v1` 保存 draft、终态记录、批次和 producer UUID。旧 assets 存储保留但不再读写。原始数据不脱敏，正文、业务凭据和内部 Token 不打印到日志或公开 fixtures。队列状态由接口行的黑白方格流动背景表示：采集/待上传轻动、实际发送增强、接收确认后填满淡出；失败保留细纹理，列表标题的提示图标可查看错误/保留数量。
+- 旧版本留下的 HTTP 队列项在启动时按新契约重新转换后上传；没有原始观测的旧证据记录标为 `LEGACY_RECORD` 失败保留。旧格式批次作废，其记录回到待上传。
+- 先落盘再发，批次 UUID 在组批时持久化；重试原样重发、复用批次 ID，服务端只计一次。50条、约4MiB 或首条就绪后约1秒触发组批；后端上限50条/8MiB批次/4MiB单条，按 UTF-8 JSON 字节计量。超限或不符合契约的记录保留 failed，不偷偷删除。
+- 回执必须通过 Schema，并核对 batch ID、逐条 index/记录 ID 和总数；未列入 rejected 的记录即被接收并从队列删除，rejected 保留为失败项及原因。413 拆批（单条则失败为 RECORD_TOO_LARGE），404 UNKNOWN_PROJECT/UNKNOWN_ENVIRONMENT 与 400 标失败，409 换新批次 ID 重发；429/503/网络错误保留原批，遵守 Retry-After，最长间隔60秒。接收只表示可靠收讫，不表示已生成接口文档。
+- 队列本地上限256MiB/5000条（失败项也占容量），每个已开始观测预留最坏编码空间48MiB。页面通过容量 credit 开始采集；容量/存储不可用则暂停新增，业务请求照常执行。持久 draft 在冷启动时以明确 unreadable 状态结算，不能假装 complete。
+- 每30秒 alarms 唤醒检查待上传队列，且有前台定时 flush。
 
-自动发送已启用，但每批先查询服务能力；用户必须先配置项目环境与授权范围。构建和隔离测试不等于已安装扩展联调。环境/队列检查报告位于仓库外 testing-core-data：28项隔离检查，以及临时真实Rust API+独立PostgreSQL的v3证据/PNG资产和旧v1/v2兼容验收。后者运行插件转换器/回执消费者和队列逻辑，但IndexedDB使用隔离实现，不是已安装Chrome扩展验收。用户需重载扩展并在头像菜单补齐项目环境后使用。
+## 持续录制与最小采样
 
-## 持续录制与最小采样（capture 1.4.0 / wire v3）
+当前只上传 HTTP 记录；页面、操作和表单样例（page_context/interaction/ui_snapshot）暂停上传，采样只用于给 HTTP 记录附页面标题和操作 ID。下面的采样规则保留，供以后恢复。
 
-- 后台启动、当前tab切换、导航和alarms协调录制，侧栏只订阅显示；关闭侧栏或编辑未提交配置不停止。实际撤权/解绑/退出/切服务/离开授权范围停止新采集并记录page_context缺口，不丢已排队数据。
+- 后台启动、当前tab切换、导航和alarms协调录制，侧栏只订阅显示；关闭侧栏或编辑未提交配置不停止。实际撤权/解绑/退出/切服务/离开授权范围停止新采集，不丢已排队数据。
 - 页面上下文包含chrome.storage.session保存的browser_instance_id（SW重启复用，浏览器会话结束后换新）、Chrome顶层document对应page UUID和独立frame UUID、每次视图变化的view_id、按frame/view分配的event_seq、可选interaction_id。HTTP请求开始时冻结page_url与request_started_at_ms；仅实际完成/失败的响应附response_completed_at_ms，超时/截断/不可读不虚构网络完成时间。
 - 初始页面和路由变化只记录 URL、标题和能力缺口；保留有意义的 click/change/submit。移除整页 DOM 扫描，以及 input、mutation、scroll、resize 的独立采样。
 - 按钮点击或 submit 的事件捕获阶段，同步读取相关表单一次，生成 ui_snapshot；同次派发期间开始的 HTTP 共用操作 ID，不在每个 XHR/fetch 中读取 DOM。关联范围包括真实 form（含显式 form= 控件）、role=form/search，以及 Element/Ant 等具有明确组件标识的 div 表单。弹窗外置按钮只关联同弹窗内唯一可见表单；存在多个可见独立表单/面板时回退目标。通用布局只检查最多6层祖先中的最小带标签/字段组容器，排除 body/html/main/app 和无标识的页面根、结果表格或多个独立操作分支，不能退回全页采样。
@@ -143,8 +145,7 @@ Chrome 的用户设置决定侧边栏位于左侧还是右侧，界面按右侧�
 - 插件无感持续观察，不假设用户在录制业务任务。role=tab 等切换只保留可观察点击线索；同URL的A/B交错、弹窗切换均重新读取局部控件，不缓存或继承A表单值/选项。A请求晚到仍保留A起点，不将邻近操作拼成业务会话。
 - 操作 ID 仅在所观察事件仍处于派发阶段时可用；不沿用到事件结束后的轮询/定时器请求，不改写 Promise 或定时器建立伪因果。延迟/防抖/异步请求可能无法关联，记录 ASYNC_REQUEST_CORRELATION_UNAVAILABLE。快照是 PRE_HANDLER_STATE_ONLY，不能代表后续业务代码修改后的值；click 和 submit 是两个独立派发时分别记录，不靠相近时间合并。
 - 采样的原始 observed_at_ms 直接写入 captured_at，HTTP 使用已冻结的 request_started_at_ms，不用后台收消息或入队的时间替代；没有合法时间的样本不补造时间。晚到响应保留请求开始时的页面、操作和归属。
-- 停止新增截图/image_reference，也不再申请截图专用 `<all_urls>`。授权时只申请当前平台主机；保留现有权限，不主动撤销已授权 HTTP 所需访问权。历史图像资产及引用队列保留原样，仍按先PUT资产、核对回执、再上传引用的顺序重试。
-- 服务能力通过 `/v1/ingestion/capabilities?schema_version=3` 协商，老服务只支持1/2时新记录留队列，不改写旧记录。旧v1/v2按旧回执处理。插件不调用模型；后端证据维护和显式重构独立进行。
+- 不截图，也不申请截图专用 `<all_urls>`。授权时只申请当前平台主机。历史图像资产不再上传。插件不调用模型。
 - 整页加载仍有初始注入窗口，记录DOCUMENT_START_NOT_COVERED，不能宣称完整网络录制；Worker、未许可/特殊frame等盲区不伪装成已覆盖。真实Chrome录制由用户验收，禁止Ego Lite与自动浏览器操作。
 
 ## Logo 动画与登录后布局
@@ -166,9 +167,9 @@ src/
   api/nexofolio/               唯一后端 API：请求、错误、登录/鉴权/用户资料
   auth/                       后台会话所有者、持久化、页面消息协议
   capture/                    后台持续录制、HTTP上下文、独立inflight及UI20缓冲
-  evidence/                   页面/操作表单采样、原始时刻及v3转换
+  evidence/                   页面标题/操作 ID 采样与采集上下文
   upload/                     持久队列、转换、回执校验、批次重试
-  contracts/ingestion/         固定的后端共享契约及静态校验器
+  contracts/collect/           固定的后端采集契约及静态校验器
   entrypoints/background.ts    工具栏、可信 panel 消息入口
   entrypoints/sidepanel/       panel 入口和页面切换
   ui/views/                   欢迎、登录、账号、服务配置页面
