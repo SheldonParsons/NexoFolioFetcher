@@ -13,6 +13,7 @@ import AccountFooter from '../../ui/components/AccountFooter.vue'
 import { platformMenuKey, type PlatformMenu } from '../../platforms/menu'
 
 type Page = 'loading' | 'welcome' | 'login' | 'settings' | 'account'
+const extensionVersion = chrome.runtime.getManifest().version
 const page = ref<Page>('loading')
 const settingsReturn = ref<Page>('welcome')
 provide(platformMenuKey, shallowRef<PlatformMenu | null>(null))
@@ -118,7 +119,7 @@ onBeforeUnmount(() => { arrival.value = null; ++arrivalSequence })
       </Transition>
     </main>
     <AccountFooter v-if="page === 'account' && state.user" :state="state" :busy="busy" :inert="!!arrival" @configure="navigate('settings')" @logout="logout" />
-    <footer v-else class="app-footer"><span><i></i>NEXOFOLIO FETCHER</span><span>v0.1.0</span></footer>
+    <footer v-else class="app-footer"><span><i></i>NEXOFOLIO FETCHER</span><span>v{{ extensionVersion }}</span></footer>
     <SaveNotice v-model:open="noticeOpen" />
     <LoginSuccessTransition v-if="arrival" :key="arrival.runId" :run-id="arrival.runId" @complete="finishArrival" />
   </div>

@@ -6,6 +6,7 @@ import { limits } from '../contracts/collect/validators.js'
 export type Headers = { state: 'complete' | 'partial' | 'truncated'; entries: [string, string][] }
 export type Body =
   | { state: 'full' | 'truncated'; media_type?: string; encoding: 'utf8' | 'base64'; content: string; bytes?: number }
+  | { state: 'partial'; media_type?: string; encoding: 'utf8' | 'base64'; content: string; note?: string }
   | { state: 'unreadable'; media_type?: string; note?: string }
   | { state: 'none' }
 export interface ExchangeContext {

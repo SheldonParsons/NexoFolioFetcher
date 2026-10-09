@@ -4,6 +4,10 @@ export interface ServiceConfig {
 }
 
 export const SERVICE_STORAGE_KEY = 'nexofolio.service.v1'
+export const DEFAULT_SERVICE: Readonly<ServiceConfig> = Object.freeze({
+  name: '公网灰度',
+  url: 'https://nexofolio.net/api',
+})
 
 export function normalizeServiceUrl(input: string): string {
   const value = input.trim()
@@ -28,9 +32,10 @@ export function parseServiceConfig(value: unknown): ServiceConfig | null {
   return { name: value.name, url: normalizeServiceUrl(value.url) }
 }
 
-export async function loadService(): Promise<ServiceConfig | null> {
+export async function loadService(): Promise<ServiceConfig> {
   const stored = await chrome.storage.local.get(SERVICE_STORAGE_KEY)
-  return parseServiceConfig(stored[SERVICE_STORAGE_KEY])
+  // A fresh install can log in immediately; saved user configuration takes priority.
+  return parseServiceConfig(stored[SERVICE_STORAGE_KEY]) ?? { ...DEFAULT_SERVICE }
 }
 
 export async function saveService(config: ServiceConfig): Promise<ServiceConfig> {

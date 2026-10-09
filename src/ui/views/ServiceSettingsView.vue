@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Label } from 'reka-ui'
-import { normalizeServiceUrl, type ServiceConfig } from '../../settings/service'
+import { DEFAULT_SERVICE, normalizeServiceUrl, type ServiceConfig } from '../../settings/service'
 import AppIcon from '../components/AppIcon.vue'
 
 const props = defineProps<{ service: ServiceConfig | null; saving: boolean; saveError: string }>()
 const emit = defineEmits<{ save: [config: ServiceConfig] }>()
-const name = ref(props.service?.name || '')
-const url = ref(props.service?.url || '')
+const name = ref(props.service?.name ?? DEFAULT_SERVICE.name)
+const url = ref(props.service?.url ?? DEFAULT_SERVICE.url)
 const validationError = ref('')
 const urlInput = ref<HTMLInputElement>()
 

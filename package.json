@@ -2,7 +2,7 @@
   "name": "nexofolio-fetcher",
   "description": "NexoFolio Fetcher Chrome panel",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.3",
   "type": "module",
   "engines": {
     "node": ">=22"

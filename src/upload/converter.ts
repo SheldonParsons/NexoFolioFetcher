@@ -20,10 +20,14 @@ export function batchOf(destination: Destination, records: CollectRecord[], batc
 function body(data: CapturedBody): Body {
   const media = data.contentType ? { media_type:data.contentType.slice(0,255) } : {}
   const encoding = data.encoding === 'base64' ? 'base64' : 'utf8'
+  // Multipart is a structured summary, never original bytes (also for legacy queued observations).
+  if (data.contentType.split(';')[0]?.trim().toLowerCase() === 'multipart/form-data' && data.body && data.encoding === 'text')
+    return { state:'partial', ...media, encoding, content:data.body, note:(data.message || '表单摘要；未保存原始 multipart 或文件字节。').slice(0,1024) }
   if (data.state === 'complete') return { state:'full', ...media, encoding, content:data.body, bytes:data.bytes }
   // Captured bytes of a truncated body are not the original size, so bytes is left out.
   if (data.state === 'truncated') return { state:'truncated', ...media, encoding, content:data.body }
   if (data.state === 'none') return { state:'none' }
+  if (data.body && data.encoding !== 'none') return { state:'truncated', ...media, encoding, content:data.body }
   return { state:'unreadable', ...media, ...(data.message ? { note:data.message.slice(0,1024) } : {}) }
 }
 // Page scripts never see forbidden headers (Cookie etc.), so what they saw is partial.

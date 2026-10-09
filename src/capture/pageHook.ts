@@ -237,7 +237,7 @@ export function installPageCapture(options: PageCaptureOptions) {
     try {
       if (value == null) { finishRequest(record, blankBody('none')); return }
       if (typeof value === 'string') { const result = textBytes(value); done(result.bytes, result.truncated, true); return }
-      if (value instanceof URLSearchParams) { const result = textBytes(value.toString()); done(result.bytes, result.truncated, true, 'URL 编码表单。'); return }
+      if (value instanceof URLSearchParams) { contentType ||= 'application/x-www-form-urlencoded;charset=UTF-8'; const result = textBytes(value.toString()); done(result.bytes, result.truncated, true, 'URL 编码表单。'); return }
       if (value instanceof FormData) {
         const fields: object[] = []
         let size = 0, truncated = false, files = false
@@ -250,8 +250,13 @@ export function installPageCapture(options: PageCaptureOptions) {
             if (key.length !== name.length || text.length !== item.length) { truncated = true; break }
           } else { files = true; fields.push({ name: key, file: item.name.slice(0, 1024), size: item.size, type: item.type.slice(0, 256) }); size += 1400 }
         }
-        const result = textBytes(JSON.stringify(fields, null, 2))
-        const body: CapturedBody = { ...encodeBody(result.bytes, '', true) as Pick<CapturedBody, 'body' | 'encoding'>, state: truncated || result.truncated ? 'truncated' : files ? 'unreadable' : 'complete', bytes: result.bytes.byteLength, contentType: 'multipart/form-data', message: '表单字段结构，保留重复字段；不是原始 multipart 字节。' + (files ? '文件只显示名称、大小和类型，未读取文件内容。' : '') + (truncated || result.truncated ? '字段已截断。' : '') }
+        // Keep a valid structured summary under the UTF-8 cap. Never slice JSON in the middle of a field.
+        let summary = JSON.stringify(fields, null, 2)
+        while (encoder.encode(summary).byteLength > options.maxBytes && fields.length) {
+          fields.pop(); truncated = true; summary = JSON.stringify(fields, null, 2)
+        }
+        const result = textBytes(summary)
+        const body: CapturedBody = { ...encodeBody(result.bytes, '', true) as Pick<CapturedBody, 'body' | 'encoding'>, state: truncated || result.truncated ? 'truncated' : 'unreadable', bytes: result.bytes.byteLength, contentType: 'multipart/form-data', message: '表单字段结构，保留重复字段；不是原始 multipart 字节。' + (files ? '文件只显示名称、大小和类型，未读取文件内容。' : '') + (truncated || result.truncated ? '字段已截断。' : '') }
         finishRequest(record, body); return
       }
       if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
