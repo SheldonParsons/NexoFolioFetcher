@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CAPTURE_LIMIT, type CaptureSnapshot } from '../../capture/contracts'
+import { CAPTURE_LIMIT, type CaptureSnapshot, type CapturedRequest } from '../../capture/contracts'
 import AppIcon from './AppIcon.vue'
 import CaptureRow from './CaptureRow.vue'
 import { rejectionReason } from '../../upload/contracts'
 
 const props = defineProps<{ snapshot: CaptureSnapshot }>()
-const emit = defineEmits<{ retry: [] }>()
+const emit = defineEmits<{ retry: []; open: [row: CapturedRequest] }>()
 const attention = computed(() => ['error','interrupted'].includes(props.snapshot.status) || !!props.snapshot.upload?.failed || !!props.snapshot.upload?.paused)
 const attentionMessage = computed(() => [props.snapshot.message, props.snapshot.upload?.message, ...(props.snapshot.upload?.failures || []).map(f => `${f.count} 条被拒绝：${rejectionReason(f.reason)}，原始记录保留`)].filter(Boolean).join('\n'))
 </script>
@@ -22,7 +22,7 @@ const attentionMessage = computed(() => [props.snapshot.message, props.snapshot.
     <button v-if="snapshot.status === 'error' || snapshot.status === 'interrupted'" class="inline-button" type="button" @click="emit('retry')">重试监听<AppIcon name="arrowRight" :size="14" /></button>
     <p v-if="!snapshot.rows.length && snapshot.status === 'listening'" class="capture-empty">等待当前页面发出请求…</p>
     <TransitionGroup tag="ol" name="request-list" class="capture-list" tabindex="0" aria-label="已捕获接口，可滚动">
-      <li v-for="row in snapshot.rows" :key="row.id" class="capture-row"><CaptureRow :request="row" /></li>
+      <li v-for="row in snapshot.rows" :key="row.recordKey" class="capture-row"><CaptureRow :request="row" @open="emit('open', row)" /></li>
     </TransitionGroup>
   </section>
 </template>

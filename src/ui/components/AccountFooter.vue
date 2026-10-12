@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { inject } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { AvatarFallback, AvatarImage, AvatarRoot, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuSeparator, DropdownMenuTrigger } from 'reka-ui'
 import type { AuthState } from '../../auth/contracts'
 import AppIcon from './AppIcon.vue'
 import { platformMenuKey } from '../../platforms/menu'
 
-defineProps<{ state: AuthState; busy: boolean }>()
+const props = defineProps<{ state: AuthState; busy: boolean }>()
 defineEmits<{ configure: []; logout: [] }>()
 const platformMenu = inject(platformMenuKey, null)
+const avatarRevision = ref(0)
+const initial = computed(() => [...(props.state.user?.displayName.trim() || props.state.user?.username || 'A')][0]?.toUpperCase())
+// Remount the image loader on identity/source changes, including removal after a loaded image.
+watch([() => props.state.service?.url, () => props.state.sessionId, () => props.state.user?.id, () => props.state.user?.avatarUrl],
+  () => { avatarRevision.value++ }, { flush: 'sync' })
 </script>
 
 <template>
@@ -15,9 +20,9 @@ const platformMenu = inject(platformMenuKey, null)
     <DropdownMenuRoot :modal="false">
       <DropdownMenuTrigger as-child>
         <button class="avatar-menu-trigger" type="button" :disabled="busy" aria-label="打开账号菜单" title="账号菜单">
-          <AvatarRoot class="user-avatar">
-            <AvatarImage v-if="state.user?.avatarUrl" :key="state.user.avatarUrl" :src="state.user.avatarUrl" alt="" referrerpolicy="no-referrer" />
-            <AvatarFallback>{{ state.user?.displayName.slice(0, 1).toUpperCase() || 'A' }}</AvatarFallback>
+          <AvatarRoot :key="avatarRevision" class="user-avatar" aria-hidden="true">
+            <AvatarImage v-if="state.user?.avatarUrl" :src="state.user.avatarUrl" alt="" referrer-policy="no-referrer" />
+            <AvatarFallback>{{ initial }}</AvatarFallback>
           </AvatarRoot>
         </button>
       </DropdownMenuTrigger>
@@ -34,7 +39,7 @@ const platformMenu = inject(platformMenuKey, null)
             <DropdownMenuLabel class="account-menu-group-label">站点绑定</DropdownMenuLabel>
             <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditProject" @select="platformMenu.editProject()"><AppIcon name="settings" :size="16" />更换绑定项目</DropdownMenuItem>
             <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditEnvironment" @select="platformMenu.editEnvironment()"><AppIcon name="settings" :size="16" />更换环境</DropdownMenuItem>
-            <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditScope" @select="platformMenu.editScope()"><AppIcon name="globe" :size="16" />为当前路径单独绑定</DropdownMenuItem>
+            <DropdownMenuItem class="account-menu-item" :disabled="busy || platformMenu.busy || !platformMenu.canEditScope" @select="platformMenu.editScope()"><AppIcon name="globe" :size="16" />新建站点 / 路径绑定</DropdownMenuItem>
           </template>
         </DropdownMenuContent>
       </DropdownMenuPortal>

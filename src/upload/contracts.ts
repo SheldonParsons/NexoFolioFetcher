@@ -31,9 +31,9 @@ export interface Receipt { batch_id: string; accepted: number; rejected: Rejecti
 
 // Where a capture goes. userId only scopes the panel's view; uploading needs no login.
 export interface Destination { serviceUrl: string; userId: string; projectId: string; environment: { id: string } | { name: string }; site?: Site }
-export interface Observation { context?: EvidenceContext; title?: string; request: CapturedInput; response: CapturedResponse; method: string; time: number; sourcePage: string; transport: 'xhr' | 'fetch'; frame: 'page' | 'iframe' }
+export interface Observation { platformVersion?: string; context?: EvidenceContext; title?: string; request: CapturedInput; response: CapturedResponse; method: string; time: number; sourcePage: string; transport: 'xhr' | 'fetch'; frame: 'page' | 'iframe' }
 // format marks items written for collect v1; older items are upgraded or failed on restore.
-export interface QueueItem { format?: 'collect-v1'; id: string; destination: Destination; observation?: Observation; createdAt: number; size: number; state: 'draft' | 'ready' | 'batched' | 'failed'; record?: CollectRecord; failure?: string }
+export interface QueueItem { platformVersion?: string; format?: 'collect-v1'; id: string; destination: Destination; observation?: Observation; createdAt: number; size: number; state: 'draft' | 'ready' | 'batched' | 'failed'; record?: CollectRecord; failure?: string }
 export interface QueueBatch { id: string; destination: Destination; itemIds: string[]; wire: CollectBatch; attempts: number; nextAttempt: number }
 export interface QueueStatus { pending: number; failed: number; bytes: number; paused: boolean; message: string; failures: { reason: string; count: number }[] }
 export interface ObservationUploadState { state: 'collecting' | 'queued' | 'sending' | 'confirmed' | 'failed'; message: string }

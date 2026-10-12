@@ -1,3 +1,7 @@
+import { ReplayManager } from '../replay/manager'
+import { REPLAY_PORT } from '../replay/contracts'
+import { UpdateManager } from '../updates/manager'
+import { requireVersionAccess, UpdateGateError } from '../updates/access'
 import { AuthManager } from '../auth/manager'
 import { ApiError, object } from '../api/nexofolio/client'
 import { APP_PROTOCOL, type AuthReply, type CredentialsReply } from '../auth/contracts'
@@ -12,6 +16,7 @@ export default defineBackground(() => {
   let auth: AuthManager
   let platforms: PlatformManager
   let capture: CaptureManager | null = null
+  let replay: ReplayManager | null = null
   let captureError = '捕获模块尚未就绪，请刷新扩展。'
   chrome.runtime.onConnect.addListener(port => {
     const sender = port.sender
@@ -19,15 +24,19 @@ export default defineBackground(() => {
       if (capture) capture.connectRelay(port); else port.disconnect()
       return
     }
-    if (port.name !== CAPTURE_PORT || sender?.id !== chrome.runtime.id || !sender.url
+    if (![CAPTURE_PORT, REPLAY_PORT].includes(port.name) || sender?.id !== chrome.runtime.id || !sender.url
         || !sender.url.startsWith(chrome.runtime.getURL('')) || new URL(sender.url).pathname !== '/sidepanel.html') { port.disconnect(); return }
+    if (port.name === REPLAY_PORT) { if (replay) replay.connect(port); else port.disconnect(); return }
     if (!capture) { port.disconnect(); return }
     capture.connect(port)
   })
+  const updates = new UpdateManager()
   const storageReady = initializeNexoFolio().then(async () => {
     auth = new AuthManager()
     platforms = new PlatformManager(auth)
     const uploads = new UploadManager()
+    updates.onChange(() => { uploads.versionChanged(); capture?.versionChanged(); replay?.versionChanged() })
+    replay = new ReplayManager(auth, platforms, (id, recordKey) => capture?.readRecord(id, recordKey) || null)
     const queueReady = await uploads.ready.then(() => true, () => false)
     if (queueReady) uploads.enableTransport()
     if (!queueReady) { captureError = '上传队列无法读取，采集已暂停；登录与服务设置仍可使用。' }
@@ -41,12 +50,18 @@ export default defineBackground(() => {
   void storageReady.catch(() => {})
   chrome.runtime.onMessage.addListener((input: unknown, sender, respond: (reply: AuthReply | CredentialsReply | { ok: true; data: unknown }) => void) => {
     const message = object(input)
-    if (!['credentials.get', 'credentials.preference', 'auth.state', 'auth.login', 'auth.logout', 'service.save', 'platform.context', 'platform.projects', 'platform.bind', 'platform.environments', 'capture.ready'].includes(String(message.type))) return
+    if (!['credentials.get', 'credentials.preference', 'auth.state', 'auth.login', 'auth.logout', 'service.save', 'platform.context', 'platform.projects', 'platform.bind', 'platform.environments', 'capture.ready', 'update.state', 'update.check', 'update.download'].includes(String(message.type))) return
     // 仅接受本扩展 panel 发来的结构化命令，不提供任意 URL 代理。
     if (sender.id !== chrome.runtime.id || !sender.url || new URL(sender.url).pathname !== '/sidepanel.html'
         || !sender.url.startsWith(chrome.runtime.getURL(''))) return
+    if (String(message.type).startsWith('update.')) {
+      const request = message.type === 'update.check' ? updates.check() : message.type === 'update.download' ? updates.download().then(() => updates.snapshot()) : Promise.resolve(updates.snapshot())
+      void request.then(data => respond({ ok: true, data })).catch(() => respond({ ok: false, error: { kind: 'update', message: '更新操作失败，请重试。' } }))
+      return true
+    }
     if (message.protocol !== APP_PROTOCOL) { respond({ ok: false, error: { kind: 'stale', message: '插件协议已升级，请关闭旧 panel 并重新打开。' } }); return }
     void storageReady.then(async (): Promise<AuthReply | CredentialsReply | { ok: true; data: unknown }> => {
+      if (!['auth.state', 'auth.logout'].includes(String(message.type))) requireVersionAccess()
       if (message.type === 'capture.ready') return { ok: true, data: { ready: !!capture, protocol: CAPTURE_PORT, message: capture ? '' : captureError } }
       if (String(message.type).startsWith('platform.')) return { ok: true, data: await handlePlatformMessage(platforms, message) }
       if (message.type === 'credentials.get' || message.type === 'credentials.preference') {
@@ -76,7 +91,7 @@ export default defineBackground(() => {
       })()
       return { ok: true, state }
     }).then(respond).catch((error: unknown) => {
-      respond({ ok: false, error: { kind: error instanceof ApiError ? error.kind : 'storage', message: error instanceof ApiError ? error.message : '插件初始化或存储操作失败，请关闭旧 panel 后重新加载扩展。' } })
+      respond({ ok: false, error: { kind: error instanceof UpdateGateError ? 'update' : error instanceof ApiError ? error.kind : 'storage', message: error instanceof ApiError || error instanceof UpdateGateError ? error.message : '插件初始化或存储操作失败，请关闭旧 panel 后重新加载扩展。' } })
     })
     return true
   })

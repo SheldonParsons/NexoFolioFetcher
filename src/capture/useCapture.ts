@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, shallowRef } from 'vue'
 import { APP_PROTOCOL } from '../auth/contracts'
-import { CAPTURE_PORT, type CaptureSnapshot, type CaptureDetail } from './contracts'
+import { CAPTURE_PORT, type CaptureSnapshot, type CaptureDetail, type CapturedRequest } from './contracts'
 
 export function useCapture() {
   const snapshot = shallowRef<CaptureSnapshot>({ status: 'idle', message: '', rows: [] })
@@ -11,6 +11,7 @@ export function useCapture() {
   let disposed = false
   let connecting = false
   let generation = 0
+  let selected: Pick<CapturedRequest, 'id' | 'recordKey'> | null = null
 
   function releasePort() {
     clearInterval(heartbeat); heartbeat = undefined
@@ -54,7 +55,9 @@ export function useCapture() {
       port = connected
       connected.onMessage.addListener((value: CaptureSnapshot | CaptureDetail) => {
         if (port !== connected || disposed) return
-        if ('kind' in value && value.kind === 'detail') detail.value = value
+        if ('kind' in value && value.kind === 'detail') {
+          if (value.id === selected?.id && value.recordKey === selected.recordKey) detail.value = value
+        }
         else snapshot.value = value as CaptureSnapshot
       })
       connected.onDisconnect.addListener(() => {
@@ -70,6 +73,7 @@ export function useCapture() {
           : '监听连接已断开，请重试或重新打开 panel。' }
       })
       post({ type: 'watch', windowId, visible: document.visibilityState === 'visible' })
+      if (selected) post({ type: 'detail', ...selected })
       heartbeat = setInterval(() => { if (document.visibilityState === 'visible') post({ type: 'heartbeat' }) }, 5000)
     } catch {
       if (!disposed && request === generation) interrupted('无法连接捕获后台，请刷新扩展并关闭旧 panel 后重新打开。')
@@ -91,6 +95,9 @@ export function useCapture() {
     } catch { snapshot.value = { ...snapshot.value, status: 'error', message: '无法读取当前窗口。' } }
   })
   onBeforeUnmount(() => { disposed = true; document.removeEventListener('visibilitychange', visibility); disconnect() })
-  function requestDetail(id: number | null) { detail.value = null; post({ type: 'detail', id }) }
+  function requestDetail(row: CapturedRequest | null) {
+    selected = row ? { id: row.id, recordKey: row.recordKey } : null
+    detail.value = null; post({ type: 'detail', id: selected?.id ?? null, recordKey: selected?.recordKey })
+  }
   return { snapshot, detail, requestDetail, retry }
 }

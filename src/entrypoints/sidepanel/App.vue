@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from 'vue'
+import UpdateView from '../../ui/views/UpdateView.vue'
+import { useUpdates } from '../../updates/useUpdates'
+import { compareVersions } from '../../updates/policy.mjs'
 import type { ServiceConfig } from '../../settings/service'
 import { useAuth } from '../../auth/useAuth'
 import AppIcon from '../../ui/components/AppIcon.vue'
@@ -13,6 +16,10 @@ import AccountFooter from '../../ui/components/AccountFooter.vue'
 import { platformMenuKey, type PlatformMenu } from '../../platforms/menu'
 
 type Page = 'loading' | 'welcome' | 'login' | 'settings' | 'account'
+const updates = useUpdates()
+const updateOpen = ref(false)
+const showUpdate = computed(() => !updates.state.value.allowed || updateOpen.value)
+const newerVersion = computed(() => updates.state.value.latest && compareVersions(updates.state.value.latest.version, extensionVersion) > 0)
 const extensionVersion = chrome.runtime.getManifest().version
 const page = ref<Page>('loading')
 const settingsReturn = ref<Page>('welcome')
@@ -32,6 +39,11 @@ const main = ref<HTMLElement>()
 onMounted(async () => {
   await auth.refresh(true)
   if (page.value === 'loading') page.value = state.value.user ? 'account' : state.value.reason === 'expired' ? 'login' : 'welcome'
+})
+
+watch(() => updates.state.value.allowed, allowed => {
+  if (!allowed) { arrival.value = null; transitioning.value = false; noticeOpen.value = false }
+  else void auth.refresh(true)
 })
 
 watch(state, next => {
@@ -100,7 +112,8 @@ onBeforeUnmount(() => { arrival.value = null; ++arrivalSequence })
 
 <template>
   <div class="panel-shell">
-    <main ref="main" class="panel-main" :inert="!!arrival">
+    <main v-if="showUpdate" class="panel-main"><UpdateView :state="updates.state.value" :error="updates.error.value" :can-logout="!!state.user" :busy="busy" @check="updates.check" @download="updates.download" @logout="logout" @close="updateOpen = false" /></main>
+    <main v-else ref="main" class="panel-main" :inert="!!arrival">
       <Transition name="panel-reveal" :mode="arrival ? undefined : 'out-in'" @before-leave="beginLeave" @after-enter="focusPage">
         <div :key="`${page}:${service?.url || ''}`" class="page-frame" :inert="transitioning">
           <div class="page-navigation" v-if="page === 'login' || page === 'settings'">
@@ -118,9 +131,14 @@ onBeforeUnmount(() => { arrival.value = null; ++arrivalSequence })
         </div>
       </Transition>
     </main>
-    <AccountFooter v-if="page === 'account' && state.user" :state="state" :busy="busy" :inert="!!arrival" @configure="navigate('settings')" @logout="logout" />
+    <AccountFooter v-if="!showUpdate && page === 'account' && state.user" :state="state" :busy="busy" :inert="!!arrival" @configure="navigate('settings')" @logout="logout" />
     <footer v-else class="app-footer"><span><i></i>NEXOFOLIO FETCHER</span><span>v{{ extensionVersion }}</span></footer>
+    <button v-if="!showUpdate" class="update-entry" @click="updateOpen = true">{{ newerVersion ? `新版本 ${updates.state.value.latest?.version} 可用` : `版本 ${extensionVersion} · 检查更新` }}</button>
     <SaveNotice v-model:open="noticeOpen" />
-    <LoginSuccessTransition v-if="arrival" :key="arrival.runId" :run-id="arrival.runId" @complete="finishArrival" />
+    <LoginSuccessTransition v-if="arrival && !showUpdate" :key="arrival.runId" :run-id="arrival.runId" @complete="finishArrival" />
   </div>
 </template>
+
+<style scoped>
+.update-entry{flex-shrink:0;margin:0 24px 10px;padding:7px;border:0;border-radius:8px;background:#f7f7f7;color:#777;font:inherit;font-size:11px;cursor:pointer}.update-entry:focus-visible{outline:2px solid #555;outline-offset:2px}
+</style>

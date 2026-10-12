@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { CapturedRequest } from '../../capture/contracts'
 
 const props = defineProps<{ request: CapturedRequest }>()
+defineEmits<{ open: [] }>()
 const confirmedFlash = ref(false)
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 watch(() => props.request.upload?.state, (next, previous) => {
@@ -30,7 +31,7 @@ const status = computed(() => {
 </script>
 
 <template>
-  <div class="request-line" :class="[`upload-${uploadState}`, { 'upload-confirming': confirmedFlash }]" :title="uploadMessage">
+  <button type="button" class="request-line" :class="[`upload-${uploadState}`, { 'upload-confirming': confirmedFlash }]" :title="`${uploadMessage} · 点击查看详情`" :aria-label="`查看 ${request.method} ${path} 的详情`" @click="$emit('open')">
     <span class="request-upload-fill" role="img" :aria-label="uploadMessage"><span class="request-upload-cells"></span></span>
     <span class="request-method" :title="request.method">{{ request.method }}</span>
     <code class="request-path" :title="path">{{ path }}</code>
@@ -42,12 +43,14 @@ const status = computed(() => {
         </span>
       </Transition>
     </span>
-  </div>
+  </button>
 </template>
 
 <style scoped>
 .request-line { position: relative; isolation: isolate; overflow: hidden; display: grid; grid-template-columns: 49px minmax(0, 1fr) 36px; align-items: center; gap: 10px; min-height: 43px; padding: 0 10px; border-radius: 8px; background: #fff; transition: background-color 140ms ease; }
 .request-line > :not(.request-upload-fill) { position: relative; z-index: 1; }
+.request-line { width: 100%; border: 0; text-align: left; }
+.request-line:focus-visible { outline: 1px solid #777; outline-offset: -1px; }
 .request-upload-fill { position: absolute; inset: 2px 0; z-index: 0; border-radius: 7px; overflow: hidden; pointer-events: none; opacity: 0; background: #0000000a; }
 .upload-collecting .request-upload-fill, .upload-queued .request-upload-fill, .upload-sending .request-upload-fill { opacity: 1; }
 .request-upload-cells { position: absolute; inset: 0 auto 0 0; width: 78%; background-image: repeating-conic-gradient(#00000038 0% 25%, transparent 0% 50%); background-size: 10px 10px; mask-image: linear-gradient(90deg, transparent, #000 16%, #000 78%, transparent); animation: upload-flow 1800ms linear infinite; }

@@ -16,7 +16,20 @@ type Environment = { id?: string; name: string }
 export class PlatformManager {
   private writes: Promise<unknown> = Promise.resolve()
   private migrated = new Set<string>()
+  private lookupRevision = 0
+  private lookups = new Map<string, Promise<{ binding: SiteBinding | null; offline: boolean }>>()
+  private verified = new Map<string, { at: number; binding: SiteBinding | null }>()
+  private targets = new Map<number, { key: string }>()
   constructor(private auth: AuthManager) {}
+
+  // The alarm must perform a fresh check even if a panel read happened just before it.
+  revalidateBindings() { this.invalidateBindings() }
+  private invalidateBindings() {
+    this.lookupRevision++
+    this.verified.clear()
+    this.lookups.clear()
+    this.targets.clear()
+  }
 
   private serialize<T>(action: () => Promise<T>) {
     const operation = this.writes.then(action, action)
@@ -31,22 +44,61 @@ export class PlatformManager {
     return value.flatMap(item => { try { return [siteFrom({ site: item, project: object(item).project, environment: object(item).environment })] } catch { return [] } })
   }
   // The server's answer replaces every cached scope that contains the page and is at least as specific.
-  private remember(serviceUrl: string, page: PageTarget, found: SiteBinding | null) {
+  private remember(serviceUrl: string, page: PageTarget, found: SiteBinding | null, assertCurrent: () => void) {
     return this.serialize(async () => {
       const before = await this.cached(serviceUrl)
+      assertCurrent()
       const after = before.filter(entry => !(entry.origin === page.origin && matchesPath(page.pathname, entry.prefix) && (!found || entry.prefix.length >= found.prefix.length)))
       if (found) after.push(found)
       if (JSON.stringify(after) !== JSON.stringify(before)) await chrome.storage.local.set({ [this.cacheKey(serviceUrl)]: after })
     })
   }
-  private async lookup(serviceUrl: string, page: PageTarget): Promise<{ binding: SiteBinding | null; offline: boolean }> {
+  private lookup(access: Access, page: PageTarget): Promise<{ binding: SiteBinding | null; offline: boolean }> {
+    access.assertCurrent()
+    const { service: { url: serviceUrl }, userId, sessionId, token } = access
+    const key = JSON.stringify([serviceUrl, userId, sessionId, token, page.windowId, page.tabId, page.address])
+    let target = this.targets.get(page.windowId)
+    if (target?.key !== key) {
+      if (target) {
+        this.verified.delete(target.key)
+        this.lookups.delete(target.key)
+      }
+      this.verified.delete(key)
+      this.lookups.delete(key)
+      target = { key }
+      this.targets.set(page.windowId, target)
+    }
+    const now = Date.now()
+    for (const [id, value] of this.verified) if (now - value.at >= 30000) this.verified.delete(id)
+    const inflight = this.lookups.get(key)
+    if (inflight) return inflight
+    const cached = this.verified.get(key)
+    if (cached) return Promise.resolve({ binding: cached.binding, offline: false })
+    const revision = this.lookupRevision
+    const assertCurrent = () => {
+      access.assertCurrent()
+      if (revision !== this.lookupRevision || this.targets.get(page.windowId) !== target)
+        throw new ApiError('stale', '当前页面或绑定已变化，请重新读取。')
+    }
+    const operation = this.readLookup(serviceUrl, page, assertCurrent).then(result => {
+      assertCurrent()
+      // Offline fallback remains storage-backed and is never a successful freshness hit.
+      if (!result.offline) this.verified.set(key, { at: now, binding: result.binding })
+      return result
+    }).finally(() => { if (this.lookups.get(key) === operation) this.lookups.delete(key) })
+    this.lookups.set(key, operation)
+    return operation
+  }
+  private async readLookup(serviceUrl: string, page: PageTarget, assertCurrent: () => void): Promise<{ binding: SiteBinding | null; offline: boolean }> {
     try {
       const found = await lookupSite(serviceUrl, page.address)
+      assertCurrent()
       const binding = found && found.origin === page.origin && matchesPath(page.pathname, found.prefix) ? found : null
-      await this.remember(serviceUrl, page, binding)
+      await this.remember(serviceUrl, page, binding, assertCurrent)
       return { binding, offline: false }
     } catch (error) {
       if (!(error instanceof ApiError) || !['network', 'server'].includes(error.kind)) throw error
+      assertCurrent()
       return { binding: matchingScope(page.origin, page.pathname, await this.cached(serviceUrl)), offline: true }
     }
   }
@@ -70,11 +122,12 @@ export class PlatformManager {
   private async describe(access: Access, windowId: number): Promise<PlatformContext> {
     const page = await this.target(windowId)
     if (!page) return { page: null, status: 'unsupported', binding: null, offline: false, legacy: null }
-    const { binding, offline } = await this.lookup(access.service.url, page)
+    const { binding, offline } = await this.lookup(access, page)
     const allowed = await chrome.permissions.contains({ origins: [serviceOriginPattern(page.origin)] })
     // An old multi-project scope is offered while nothing at least as specific is registered.
     const legacy = matchingScope(page.origin, page.pathname, await legacyChoices(access.service.url, access.userId))
     access.assertCurrent()
+    await this.currentTarget(page)
     return {
       page, binding, offline,
       legacy: legacy && (!binding || legacy.prefix.length > binding.prefix.length) ? legacy : null,
@@ -85,7 +138,9 @@ export class PlatformManager {
   private async register(access: Access, scope: PlatformScope, projectId: string, environment: Environment) {
     const id = environment.id ?? (await createEnvironment(access.service.url, access.token, projectId, environment.name)).id
     access.assertCurrent()
-    await bindSite(access.service.url, access.token, scope, projectId, id)
+    this.invalidateBindings()
+    try { await bindSite(access.service.url, access.token, scope, projectId, id) }
+    finally { this.invalidateBindings() }
   }
   // F9, once per session: single-project scopes go to the server unless it already has that scope.
   private async migrate(access: Access) {

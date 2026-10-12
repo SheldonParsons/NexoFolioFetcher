@@ -83,6 +83,36 @@ h1 { font-size: 26px; line-height: 1.4; font-weight: 650; letter-spacing: -.8px;
 .project-option[data-disabled] { cursor: default; }
 .project-selected-mark { display: grid; place-items: center; width: 18px; height: 18px; flex-shrink: 0; line-height: 0; }
 .project-selected-mark svg { display: block; }
+.binding-editor-heading .eyebrow { margin: 0 0 8px; letter-spacing: 1px; font-size: 10px; }
+.binding-editor-heading h1 { margin: 0 0 9px; font-size: 21px; line-height: 1.45; letter-spacing: -.5px; }
+.binding-editor-heading > p:last-child { margin: 0; color: #727272; font-size: 11px; line-height: 1.8; }
+.binding-form { gap: 22px; margin-top: 24px; padding-bottom: 8px; }
+.binding-form .platform-hint { color: #727272; }
+.binding-site { display: grid; gap: 7px; min-width: 0; padding-bottom: 16px; border-bottom: 1px solid #eee; }
+.binding-site-label { color: #777; font-size: 10px; }
+.binding-site > strong { font-size: 12px; line-height: 1.7; font-weight: 500; color: #333; overflow-wrap: anywhere; }
+.binding-scope-line { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11px; line-height: 1.7; color: #666; }
+.binding-scope-line > svg { flex-shrink: 0; }
+.binding-scope-line > span { min-width: 0; overflow-wrap: anywhere; }
+.binding-scope-line .inline-button { flex-shrink: 0; margin-left: auto; padding: 1px 0 1px 8px; font-size: 10px; }
+.scope-customization-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 10px; border: 0; border-radius: 4px; padding: 2px 0; background: transparent; color: #555; font-size: 11px; line-height: 1.8; text-align: left; }
+.scope-customization-content { padding-top: 15px; }
+.scope-customization-content .scope-options { margin-top: 3px; }
+.scope-customization-content .scope-option { font-size: 11px; padding: 5px 8px; }
+.field-intro { display: grid; gap: 7px; min-width: 0; }
+.field-intro > label, .field-label { font-size: 12px; font-weight: 550; }
+.field-intro > p { margin: 0; color: #727272; font-size: 11px; line-height: 1.8; }
+.binding-project-field { display: grid; gap: 5px; min-width: 0; }
+.fixed-project { font-size: 13px; font-weight: 500; line-height: 1.7; overflow-wrap: anywhere; }
+.binding-form .project-list { max-height: clamp(120px, 23vh, 210px); }
+.environment-menu { z-index: 40; width: var(--reka-select-trigger-width); max-width: calc(100vw - 32px); max-height: min(260px, var(--reka-select-content-available-height)); padding: 5px; border: 1px solid #ddd; border-radius: 10px; background: #fff; box-shadow: 0 8px 28px #0000000d, 0 2px 6px #00000005; overflow: hidden; }
+.environment-menu-viewport { padding: 0; scrollbar-width: thin; scrollbar-color: #ccc transparent; }
+.environment-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; padding: 8px 9px; border-radius: 6px; color: #444; font-size: 12px; line-height: 1.6; outline: none; cursor: pointer; user-select: none; }
+.environment-option > :first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.environment-option-check { display: grid; place-items: center; flex-shrink: 0; }
+.environment-option[data-highlighted] { background: #f3f3f3; color: #111; }
+.environment-option[data-state='checked'] { color: #111; font-weight: 500; }
+.binding-choice > span { min-width: 0; overflow-wrap: anywhere; }
 .binding-choice { display: flex; justify-content: space-between; align-items: center; gap: 9px; padding: 13px; border: 1px solid #e5e5e5; border-radius: 9px; font-size: 12px; background: #fff; color: #444; text-align: left; }
 .binding-choice:hover:not(:disabled) { background: #f7f7f7; }
 .capture-feed { min-width: 0; }

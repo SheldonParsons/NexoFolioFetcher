@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { MorphIcon } from 'morphicons/vue'
-import { ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Globe, LockKeyhole, Settings2, LogOut } from 'lucide'
+import { ArrowLeft, ArrowRight, Check, ChevronRight, Copy, Plus, Eye, EyeOff, Globe, LockKeyhole, Settings2, LogOut } from 'lucide'
 
 const icons = { arrowLeft: ArrowLeft, arrowRight: ArrowRight, check: Check, chevronRight: ChevronRight,
-  eye: Eye, eyeOff: EyeOff, globe: Globe, lock: LockKeyhole, settings: Settings2, logout: LogOut }
+  copy: Copy, plus: Plus, eye: Eye, eyeOff: EyeOff, globe: Globe, lock: LockKeyhole, settings: Settings2, logout: LogOut }
 withDefaults(defineProps<{ name: keyof typeof icons; size?: number }>(), { size: 18 })
 </script>
 

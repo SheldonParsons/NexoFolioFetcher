@@ -4,16 +4,16 @@
 
 仓库：[SheldonParsons/NexoFolioFetcher](https://github.com/SheldonParsons/NexoFolioFetcher)。登录和项目绑定已迁移至 NexoFolio /v1 API。首次加载新版会清理本插件旧数据并记录一次性迁移标记；需重新配置 NexoFolio 基地址和登录。
 
-当前版本 `0.1.0` 提供欢迎页、NexoFolio 登录、用户昵称首字头像、持久化登录态、本地退出和服务配置。配置支持 HTTP/HTTPS、域名/IP、自定义端口及部署路径。
+当前开发版本（见 `package.json`） 提供欢迎页、NexoFolio 登录、NexoFolio 个人头像（失败回退昵称首字）、持久化登录态、本地退出和服务配置。配置支持 HTTP/HTTPS、域名/IP、自定义端口及部署路径。
 
-当前提供页面内 XHR/fetch 响应采集能力试用。NexoFolio 是唯一 API 后端，业务请求统一在 `src/api/nexofolio/` 管理并由扩展后台发起。
+当前提供页面内 XHR/fetch 响应采集能力试用。NexoFolio 平台 API 统一在 `src/api/nexofolio/` 管理并由扩展后台发起；用户主动发送的业务调试请求由独立的 `src/replay/` 模块处理。
 
 ## XHR / fetch 响应采集（能力试用）
 
 - 登录状态已验证、浏览器已允许访问当前站点且服务端有该站点的绑定时，后台自动监听当前活动标签页；不依赖 panel 打开或可见，没有开始/结束/增强模式开关。
 - 使用 `chrome.scripting` 在页面 MAIN 环境包装 `fetch` / `XMLHttpRequest`，通过 ISOLATED 桥接传回后台。**不使用 debugger，不触发扩展调试提示条。**
 - 最近 **20 条**按请求出现顺序倒序展示。列表使用单行组件：请求方法、path（不含域名/query/hash）、响应码；长路径省略，悬停可查看 path。等待响应时显示轻微脉动点，拿到 HTTP 状态后按先退后进顺序切换为状态码，新请求以短淡入/位移动画出现。支持减少动态效果。
-- 当前阶段暂时收起行内详情，详情交互待单独设计；底层采集的 URL、Params 来源、两侧 Headers/Body 仍保留。列表不展示请求出现时间，也不把它误标成响应耗时。单条读取上限和完整性标记继续保留在数据中。
+- 点击接口行进入专用详情视图，按需读取一条原始记录，独立编辑 URL、参数、Headers 和 Body，再由用户手动发送。原始采集与发送结果分别显示，编辑不改写证据或上传队列。列表不展示请求出现时间，也不把它误标成响应耗时。单条读取上限和完整性标记继续保留在数据中。
 - fetch 请求头来自页面的 init.headers 或 Request.headers；XHR 请求头来自成功调用的 setRequestHeader，保留重复设置。响应头来自 Response.headers / getAllResponseHeaders，不能声称完整网络报文。单侧最多 256 项、64 Ki 字符，超过时标记截断。请求 URL 最多 1 Mi 字符，超出有 urlTruncated；Params 可由 URL 派生，保留重复参数。
 - 请求正文支持字符串/JSON 文本、URLSearchParams、ArrayBuffer/视图、Blob 和可复制的 Request 正文。FormData 保留字段结构，文件仅元数据；不消费原始上传流。请求/响应正文各自最多 1 MiB，读取截止时间 15 秒。
 - fetch 读取 `Response.clone()` 副本，不消费原始 Response；XHR 读取浏览器已得到的 response。支持文本、JSON、ArrayBuffer、Blob，二进制以 Base64 展示；XHR JSON 是已解析对象的重新序列化，不是逐字节原始文本。XHR document 类型暂不支持。
@@ -22,7 +22,7 @@
 - 每条记录显示上传状态：采集中 / 待上传 / 已确认 / 被拒绝（附原因，如「绑定的项目不存在或无权访问」）。被拒绝的原始记录保留在本地，列表上方汇总各原因的条数。
 - 监听生命周期与记录缓冲独立：停止、重连、切页、项目绑定变化不会主动整批清空。切走时停止新采集，已发出的HTTP最多有界收尾47秒，保持原项目环境和请求发出时的上下文；文档销毁或期限到达则明确标记中断，已收到的正文保留。panel 的记录订阅不依赖当前页面是否已绑定，显示则仅限已授权绑定且未进入配置编辑的页面。
 - 拦截撤销时仅恢复仍属于本插件的包装函数，取消响应副本读取和本插件事件监听，不中止原请求。桥接断开会清理拦截，另有 15 秒租约兜底，防止扩展刷新后旧脚本长期运行。
-- 最近20条只是界面内存缓冲；待上传观测、批次和生产者ID独立存储在本扩展 IndexedDB。授权范围内的观测不脱敏，按明确项目/环境/服务发送到 NexoFolio；不重放业务接口。容量耗尽暂停新增采集，不淘汰未确认数据。
+- 最近20条只是界面内存缓冲；待上传观测、批次和生产者ID独立存储在本扩展 IndexedDB。授权范围内的观测不脱敏，按明确项目/环境/服务发送到 NexoFolio；不会自动重放业务接口，手动调试结果也不会自动加入队列。容量耗尽暂停新增采集，不淘汰未确认数据。
 
 更新后，在扩展管理页刷新扩展，再刷新业务页面并重新打开 panel。旧版调试连接随扩展重载释放。Chrome 可能要求确认新增的 `scripting` 权限。
 
@@ -129,7 +129,7 @@ Chrome 的用户设置决定侧边栏位于左侧还是右侧，界面按右侧�
 - 每条 HTTP 记录是 `http_exchange` version 1：请求/响应原样上传，不脱敏、不改写 URL、不为凑上限截断。采集状态映射为 full/truncated/unreadable/none；超时或读不到的正文标为 unreadable 并在 note 写原因，页面看不到的请求头（Cookie 等）标 partial。页面 URL、标题、producer UUID、page/frame/view、操作 ID、序号和起止时间放在 context。
 - 批次 target 为项目、环境（`{id}` 或 `{name}`，按名称时服务端自动创建）和采集站点（origin + prefix）；同一 target 的记录才同批。
 - IndexedDB `nexofolio-upload-v1` 保存 draft、终态记录、批次和 producer UUID。旧 assets 存储保留但不再读写。原始数据不脱敏，正文、业务凭据和内部 Token 不打印到日志或公开 fixtures。队列状态由接口行的黑白方格流动背景表示：采集/待上传轻动、实际发送增强、接收确认后填满淡出；失败保留细纹理，列表标题的提示图标可查看错误/保留数量。
-- 旧版本留下的 HTTP 队列项在启动时按新契约重新转换后上传；没有原始观测的旧证据记录标为 `LEGACY_RECORD` 失败保留。旧格式批次作废，其记录回到待上传。
+- 更新门禁不重写历史批次：已有 collect 批次按原 ID/正文重试，旧 ingestion 格式原样保留，不因版本更新重新转换或作废。运行版本在独立请求头传递；新采集项冻结出处版本，未记录出处版本的历史项不补造成当前版本。
 - 先落盘再发，批次 UUID 在组批时持久化；重试原样重发、复用批次 ID，服务端只计一次。50条、约4MiB 或首条就绪后约1秒触发组批；后端上限50条/8MiB批次/4MiB单条，按 UTF-8 JSON 字节计量。超限或不符合契约的记录保留 failed，不偷偷删除。
 - 回执必须通过 Schema，并核对 batch ID、逐条 index/记录 ID 和总数；未列入 rejected 的记录即被接收并从队列删除，rejected 保留为失败项及原因。413 拆批（单条则失败为 RECORD_TOO_LARGE），404 UNKNOWN_PROJECT/UNKNOWN_ENVIRONMENT 与 400 标失败，409 换新批次 ID 重发；429/503/网络错误保留原批，遵守 Retry-After，最长间隔60秒。接收只表示可靠收讫，不表示已生成接口文档。
 - 队列本地上限256MiB/5000条（失败项也占容量），每个已开始观测预留最坏编码空间48MiB。页面通过容量 credit 开始采集；容量/存储不可用则暂停新增，业务请求照常执行。持久 draft 在冷启动时以明确 unreadable 状态结算，不能假装 complete。
@@ -189,36 +189,48 @@ UI 使用 Vue 3、Reka UI、Morphicons + Lucide，页面切换采用 Transitions
 
 ## 权限和数据
 
-固定权限为 `sidePanel`、`storage`、`tabs`、`scripting`、`webNavigation` 和 `alarms`；`http://*/*`、`https://*/*` 声明可选主机权限（实际按单个主机申请，不申请全站截图权限），在用户点击登录/重新验证或平台授权时申请相应主机。项目列表通过唯一的 NexoFolio 后端读取，捕获模块不向业务站点重发接口请求。只在授权/绑定检查通过后按文档注入采集脚本，没有常驻全站内容脚本或任意 URL 代理。Logo、字体（系统字体）、组件代码均在本地；当前头像为昵称首字，不猜测资源地址。
+固定权限为 `sidePanel`、`storage`、`tabs`、`scripting`、`webNavigation` 和 `alarms`；`http://*/*`、`https://*/*` 声明可选主机权限（实际按单个主机申请，不申请全站截图权限），在用户点击登录/重新验证或平台授权时申请相应主机。项目列表通过唯一的 NexoFolio 后端读取，捕获模块不向业务站点重发接口请求。只在授权/绑定检查通过后按文档注入采集脚本，没有常驻全站内容脚本或任意 URL 代理。Logo、字体（系统字体）、组件代码均在本地；头像使用个人资料中的可选 avatar_url，缺失或加载失败时回退昵称首字。
 
 服务配置、内部 Token、最小用户资料、到期时间和项目同步状态存储在本扩展 `chrome.storage.local`，记住的账号密码按用户勾选存储，没有额外加密层。访问级别限定为扩展可信上下文，扩展卸载会移除扩展本地存储。
 
-## 开发版打包与 OSS 发布
+## 接口详情与手动发送
 
-使用 Node 22+、Python 3，首次安装依赖运行 `npm ci`。复制 `.env.oss.example` 为 `.env.oss.local`，填入 OSS 凭据；该文件已被 Git 忽略，仅发布脚本读取，不进入插件构建包。当前机器已配置，后续不依赖后端工程的 `.env`。
+详情按不可复用的 recordKey 读取，worker 重启、记录淘汰或账户/服务变化不会替换成另一条同名接口。上方保留返回、原始方法只读标签、完整 URL、发送/取消；请求方法不允许修改，后台发送前也核对原方法；下方请求和响应分区各自滚动，也可单独放大。参数、Headers 和正文以 Reka 标签切换；CodeMirror 提供行号、折叠、查找、折行、复制与 JSON 格式化。格式化保留数字字面值，不通过反序列化重写长整数 ID。
+
+- URL 与参数共享一个草稿，保留重复键、空值和未编辑参数的原始编码。请求 Headers 使用与 Body 相同的文本编辑器，每行「名称: 值」，行首加「# 」停用，保留重复项、空值及值中的冒号；原始和响应 Headers 使用只读编辑器。浏览器管理的 Cookie、Host、Origin、Referer 等不手工转发，重复请求头在 Fetch 中可能合并。
+- 支持完整 JSON、文本、URL 编码表单和完整 Base64 二进制。文本以 UTF-8 发送。GET/HEAD 须明确使用无正文；缺失/读取中/截断正文和 multipart 字段/文件元数据须手动重建，不能静默作为空正文发送。请求正文最多 1 MiB；超过 256 项的表单保留完整编码原文，用文本方式编辑。
+- 后台直接 Fetch，默认不带浏览器 Cookie，可显式开启同一原目标域/环境的浏览器凭据（仍受浏览器策略限制）。不附加 NexoFolio 登录 Token，不在页面 MAIN/ISOLATED 执行，不经过采集上传链路。
+- 只接受合法 panel 的结构化端口命令。发送前重新校验账号、服务、原始站点/项目/环境、活动页面/窗口、项目访问权限、目标主机许可与共享版本门禁。目标域或已登记环境变化时须单独核对，且不沿用浏览器凭据。权限通过单独按钮申请，授权后不会自动发送。
+- 一次点击只发送一次，不自动重试或跟随重定向。等待上限 25 秒，响应正文读取上限 15 秒/1 MiB。HTTP 非 2xx 仍显示真实响应；网络失败、取消和超时单独表达，停止等待不表示服务端未执行或已回滚。响应只展示 Fetch 可读取的 Header，不伪造 Set-Cookie。
+- 草稿和发送结果仅存本次详情内存，返回、切记录或关闭 panel 时停止等待。原始记录的后续采集更新不会覆盖已经编辑的草稿。
+
+本轮仅实现与构建；不运行自动测试、浏览器 QA 或真实业务发送。用户重新加载 `.output/chrome-mv3` 后亲自验收。
+
+## OSS 更新门禁与开发版发布
+
+版本校验无需登录，扩展后台只访问固定 OSS `https://asynctest.oss-cn-shenzhen.aliyuncs.com/nexofolio_fetcher/latest.json`。启动先校验，随后约每5分钟校验，多个panel共享状态；未通过/失败/过期暂停新增采集、上传、绑定、创建环境及手动重发。已有登录、绑定与队列保留，已发出请求的回执可以正常落盘。下载 ZIP 后仍需解压覆盖原安装目录并在 Chrome 重新加载；“我已更新”按钮只重新校验实际 manifest 版本，不修改版本或解除门禁。
+
+普通更新只提示，最低版本不变；强制更新提升最低版本。例如强制0.1.4后再普通发布0.1.5，最低版本仍是0.1.4。策略以单调递增 revision 和最低版本保存到 chrome.storage.local，重启、断网、老格式清单或回退清单不能解除已知门槛。现有无策略字段的完整清单仅作为首次兼容，最低0.0.0；一旦看到新策略不再接受旧格式。
+
+今后 Fetcher 发布统一由本任务按用户明确给出的**版本号、更新说明、普通/强制模式**执行。当前实现不代表已经发布；所有命令示例必须在获准发布后才执行：
 
 ```sh
-# 按当前版本构建、打包、上传
-npm run release:dev
+# notes.txt 每行一条更新说明。必须选择一种模式，否则拒绝运行。
+npm run release:dev -- --version 0.1.4 --normal --notes-file notes.txt
+npm run release:dev -- --version 0.1.4 --force --notes-file notes.txt
 
-# 升级版本，并完成构建、打包、上传（同步 package.json 和 package-lock.json）
-npm run release:dev -- --version 0.1.1
+# 仅生成冻结发布物，不上传（仍从 OSS 读取当前门槛）
+npm run package:dev -- --version 0.1.4 --normal --notes-file notes.txt
 
-# 仅构建打包，不上传
-npm run release:dev -- --version 0.1.1 --package-only
-
-# 网络失败后，重试上传本地已有包，不重新构建
-npm run release:dev -- --upload-only
-
-# 明确需要替换已发布的同版本文件时使用，日常升级应递增版本号
-npm run release:dev -- --upload-only --replace-published
+# 同版本、同模式重试已冻结的包，不重建、不修改说明或批次
+npm run release:dev -- --version 0.1.4 --normal --upload-only
 ```
 
-产物位于 `.output/releases/<版本>-dev/`。只上传 `NexoFolio-Fetcher-<版本>-dev.zip` 和 `latest.json`，目标固定为 `https://asynctest.oss-cn-shenzhen.aliyuncs.com/nexofolio_fetcher/`。ZIP 根目录包含 `manifest.json`，解压后可直接在 Chrome 加载未打包扩展。
+使用 Node22+/Python3。OSS凭据仅在被Git忽略的 `.env.oss.local`；模板 `.env.oss.example`。构建子进程主动移除OSS/阿里云环境变量。发布脚本不提交、打标签、push或运行测试，也不允许 `--replace-published` 覆盖同版本不同字节。
 
-流程先上传 ZIP，通过公开链接核对 SHA-256，再发布并回读 `latest.json`；清单保留版本、下载地址、文件大小、SHA-256、最低 Chrome 版本和构建时间。仅这两个对象设为公开读取，不更改桶级权限。默认拒绝覆盖内容不同的同版本 ZIP。发布命令不创建 Git 提交或标签、不推送代码，也不运行测试；升级失败后保留本地版本和产物，方便重试。
+`.output/releases/<版本>-dev/` 包含 ZIP、latest.json、冻结计划和哈希封印。公开上传仅两个文件，另有一个私有临时 `.release-lock.json` 互斥对象。顺序为：冻结旧策略摘要/模式/新门槛→构建打包→验证ZIP manifest/入口/CRC/大小/hash→上传不可覆盖的版本ZIP→公开下载校验大小/SHA-256→持锁再次确认旧策略未变→最后发布latest.json→公开回读核对→释放锁。失败不得先提升门槛。
 
-这是手动安装包和版本清单，更新时将新版解压覆盖到原安装目录，再在 Chrome 扩展管理页重新加载；它不是 Chrome 商店自动更新包。
+详情、并发/失败恢复及后台重发集成方法见 [更新发布说明](docs/fetcher-updates.md)。
 
 ## 验证约定
 

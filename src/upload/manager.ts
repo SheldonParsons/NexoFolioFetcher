@@ -1,3 +1,4 @@
+import { versionAllowed } from '../updates/access'
 import { ApiError } from '../api/nexofolio/client'
 import { submitBatch } from '../api/nexofolio/collect'
 import { QueueStore } from './store'
@@ -16,6 +17,10 @@ export class UploadManager {
   private confirmed = new Set<string>()
   private running=false
   private transportEnabled=false
+  versionChanged(){
+    if (!versionAllowed()) { clearTimeout(this.timer); this.timer=undefined; this.message="版本校验未通过，上传暂停，原队列保留。"; this.notify() }
+    else this.wake()
+  }
   enableTransport(){this.transportEnabled=true;this.wake()}
   private message='等待上传服务就绪。'
   private storageFailed=false
@@ -41,13 +46,13 @@ export class UploadManager {
   private bytes(){return [...this.items.values()].reduce((sum,item)=>sum+item.size,0)}
   status():QueueStatus {
     const reasons=new Map<string,number>();for(const item of this.items.values())if(item.state==='failed'){const reason=item.failure||'UNKNOWN';reasons.set(reason,(reasons.get(reason)||0)+1)}
-    return {failures:[...reasons].map(([reason,count])=>({reason,count})),pending:[...this.items.values()].filter(i=>i.state!=='failed').length,failed:[...this.items.values()].filter(i=>i.state==='failed').length,bytes:this.bytes(),paused:this.storageFailed||(!this.canReserve()&&!this.hasCredits()),message:this.message}
+    return {failures:[...reasons].map(([reason,count])=>({reason,count})),pending:[...this.items.values()].filter(i=>i.state!=='failed').length,failed:[...this.items.values()].filter(i=>i.state==='failed').length,bytes:this.bytes(),paused:!versionAllowed()||this.storageFailed||(!this.canReserve()&&!this.hasCredits()),message:this.message}
   }
   private reservedBytes(){return [...this.reservations.values()].reduce((sum,bytes)=>sum+bytes,0)}
   private canReserve(){return this.items.size+this.reservations.size<MAX_QUEUE_ITEMS && this.bytes()+this.reservedBytes()+RESERVATION_BYTES<=MAX_QUEUE_BYTES}
   terminalStored(id:string){return !this.dirty.has(id) && this.items.get(id)?.state!=='draft'}
   reserve():string|null {
-    if(!this.producer||this.storageFailed||!this.canReserve())return null
+    if(!versionAllowed()||!this.producer||this.storageFailed||!this.canReserve())return null
     const id=crypto.randomUUID();this.reservations.set(id,RESERVATION_BYTES);return id
   }
   release(id:string){this.reservations.delete(id)}
@@ -55,27 +60,17 @@ export class UploadManager {
   private async restore(){
     const saved=await this.store.all();this.producer=saved.instanceId||crypto.randomUUID()
     if(!saved.instanceId)await this.store.write({instanceId:this.producer})
-    const changed:QueueItem[]=[],staleBatches:string[]=[]
-    // Batches built for the old ingestion wire are dropped; their items go back to ready and are rebatched.
-    const stale=new Set<string>()
-    for(const batch of saved.batches){
-      if(batch.wire && 'platform' in batch.wire)this.batches.set(batch.id,batch)
-      else {staleBatches.push(batch.id);for(const id of batch.itemIds||[])stale.add(id)}
-    }
-    for(const saved_ of saved.items){
-      let item=saved_
-      if(item.format!=='collect-v1'){
-        // Old HTTP items keep their observation and are converted again; evidence-only records have nothing to convert.
-        item=item.observation
-          ?{format:'collect-v1',id:item.id,destination:item.destination,observation:item.observation,createdAt:item.createdAt,size:0,state:item.state==='draft'?'draft':'ready'}
-          :{...item,format:'collect-v1',state:'failed',failure:item.failure||'LEGACY_RECORD'}
-        if(item.state==='ready')this.finalize(item)
-        changed.push(item)
-      } else if(stale.has(item.id)&&item.state==='batched'){item={...item,state:'ready'};changed.push(item)}
-      if(item.state==='draft'){item.observation=interrupted(item.observation!);this.finalize(item);changed.push(item)}
+    const changed:QueueItem[]=[]
+    // Preserve historical batches byte-for-byte. Unsupported legacy entries stay
+    // on disk; a version policy is never permission to migrate or delete them.
+    for(const batch of saved.batches)this.batches.set(batch.id,batch)
+    for(const item of saved.items){
+      if(item.format==='collect-v1'&&item.state==='draft'){
+        item.observation=interrupted(item.observation!);this.finalize(item);changed.push(item)
+      }
       this.items.set(item.id,item)
     }
-    if(changed.length||staleBatches.length)await this.store.write({items:changed,deleteBatches:staleBatches})
+    if(changed.length)await this.store.write({items:changed})
     this.notify();this.wake()
   }
   private finalize(item:QueueItem){
@@ -86,13 +81,15 @@ export class UploadManager {
   }
   async save(id:string,destination:Destination,value:Observation):Promise<void>{
     // Snapshot before entering the async write queue: callers may mutate their UI object.
+    const admitted=versionAllowed()
     const observation=structuredClone(value), scope=structuredClone(destination)
     return this.exclusive(async()=>{
       await this.ready
       const previous=this.items.get(id)
+      if(!previous&&!admitted)return
       if(previous && previous.state!=='draft')return // immutable terminal record
       if(!previous&&!this.reservations.has(id))throw new Error('QUEUE_RESERVATION_REQUIRED')
-      const item:QueueItem={format:'collect-v1',id,destination:scope,observation,createdAt:previous?.createdAt||Date.now(),size:0,state:'draft'}
+      const item:QueueItem={format:'collect-v1',platformVersion:previous?.platformVersion || observation.platformVersion,id,destination:scope,observation,createdAt:previous?.createdAt||Date.now(),size:0,state:'draft'}
       if(terminal(observation))this.finalize(item)
       item.size=encodedSize(item)
       this.items.set(id,item);this.reservations.delete(id)
@@ -105,6 +102,7 @@ export class UploadManager {
     })
   }
   wake(){
+    if(!versionAllowed())return
     const ready=[...this.items.values()].filter(item=>item.state==='ready')
     const urgent=ready.length>=MAX_RECORDS||ready.reduce((sum,item)=>sum+item.size,0)>=4*1024*1024
     if(urgent&&this.timer){clearTimeout(this.timer);this.timer=undefined}
@@ -122,7 +120,7 @@ export class UploadManager {
     })
   }
   private rebatch(active:QueueBatch,ids:string[]):QueueBatch{
-    const wire=batchOf(active.destination,ids.map(id=>this.items.get(id)!.record!))
+    const wire=batchOf(active.destination,ids.map(id=>this.items.get(id)!.record!),undefined,active.wire.platform_version)
     return {id:wire.batch_id,destination:active.destination,itemIds:ids,wire,attempts:0,nextAttempt:0}
   }
   private failAll(active:QueueBatch,failure:string){return this.settle(active,active.itemIds.map(id=>({...this.items.get(id)!,state:'failed' as const,failure})))}
@@ -132,27 +130,29 @@ export class UploadManager {
     try {
       await this.ready
       if(this.dirty.size){await this.exclusive(async()=>{await this.store.write({items:[...this.dirty.values()]});this.dirty.clear();this.storageFailed=false})}
-      if (!this.transportEnabled) { this.message='上传服务初始化中，队列保留。'; return }
-      let batch=[...this.batches.values()].find(b=>b.nextAttempt<=Date.now())
+      if (!versionAllowed() || !this.transportEnabled) { this.message='上传服务初始化中，队列保留。'; return }
+      let batch=[...this.batches.values()].find(b=>b.wire && 'platform' in b.wire && b.nextAttempt<=Date.now())
       if(!batch)batch=await this.exclusive(async()=>{
-        const first=[...this.items.values()].find(i=>i.state==='ready')
+        if(!versionAllowed())return undefined
+        const first=[...this.items.values()].find(i=>i.format==='collect-v1'&&i.state==='ready')
         if(!first)return undefined
         const selected:QueueItem[]=[]
         let bytes=0
         for(const item of this.items.values()){
-          if(item.state!=='ready'||groupKey(item.destination)!==groupKey(first.destination))continue
+          if(item.format!=='collect-v1'||item.platformVersion!==first.platformVersion||item.state!=='ready'||groupKey(item.destination)!==groupKey(first.destination))continue
           const size=encodedSize(item.record)
           if(selected.length&&(selected.length>=MAX_RECORDS||bytes+size>BATCH_TARGET_BYTES))break
           selected.push(item);bytes+=size
         }
-        const wire=batchOf(first.destination,selected.map(i=>i.record!))
+        const wire=batchOf(first.destination,selected.map(i=>i.record!),undefined,first.platformVersion)
         const created:QueueBatch={id:wire.batch_id,destination:first.destination,itemIds:selected.map(i=>i.id),wire,attempts:0,nextAttempt:0}
         const updates=selected.map(i=>({...i,state:'batched' as const}))
         await this.store.write({items:updates,batches:[created]})
         for(const item of updates)this.items.set(item.id,item)
         this.batches.set(created.id,created);return created
       })
-      if(!batch){this.message=this.items.size?'失败记录已保留，其余已全部交给接收服务。':'已全部交给接收服务。';return}
+      if(!batch){this.message=[...this.items.values()].some(item=>item.format!=='collect-v1')?'旧格式队列原样保留，未自动转换或上传。':this.items.size?'失败记录已保留，其余已全部交给接收服务。':'已全部交给接收服务。';return}
+      if(!versionAllowed())return
       const active=batch
       try {
         for(const id of active.itemIds)this.sending.add(id)
@@ -169,7 +169,9 @@ export class UploadManager {
         this.message=updates.length?'接收服务已确认；部分记录被拒绝，原始记录保留为失败状态。':'接收服务已确认。'
       } catch(error){
         const status=error instanceof ApiError?error.status:undefined, code=error instanceof ApiError?error.code:''
-        if(status===413){
+        if(error instanceof ApiError && error.kind==='update'){
+          this.message='运行版本未获准上传，原批次与记录保留，等待 OSS 校验恢复。'
+        } else if(status===413){
           if(active.itemIds.length===1)await this.failAll(active,'RECORD_TOO_LARGE')
           else {
             const half=Math.ceil(active.itemIds.length/2)
@@ -194,6 +196,6 @@ export class UploadManager {
         }
       }
     } catch {this.message=this.storageFailed?'队列存储失败，新增采集已暂停。':'上传服务暂未就绪，队列保留。'}
-    finally {this.sending.clear();this.running=false;this.notify();if(this.items.size||this.dirty.size){clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=undefined;void this.flush()},1000)}}
+    finally {this.sending.clear();this.running=false;this.notify();if(versionAllowed()&&(this.items.size||this.dirty.size)){clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=undefined;void this.flush()},1000)}}
   }
 }

@@ -2,7 +2,7 @@ import { ApiError, isUuid, NexoFolioClient, object } from './client'
 export interface Environment { id: string; name: string }
 export interface EnvironmentPage { items: Environment[]; page: number; limit: number; total: number }
 // Same name rule as the backend: 1–64 chars, no control characters, no surrounding space.
-const isName=(value:unknown):value is string=>typeof value==='string'&&value.length>=1&&value.length<=64&&value===value.trim()&&!/[\u0000-\u001f\u007f]/.test(value)
+const isName=(value:unknown):value is string=>typeof value==='string'&&value.length>=1&&[...value].length<=64&&value===value.trim()&&!/[\u0000-\u001f\u007f]/.test(value)
 const isEnvironment=(value:unknown)=>isUuid(object(value).id)&&isName(object(value).name)
 const count=(value:unknown)=>Number.isSafeInteger(value)&&(value as number)>=0
 const isEnvironmentPage=(value:unknown)=>{const v=object(value);return Array.isArray(v.items)&&v.items.every(isEnvironment)&&count(v.page)&&count(v.limit)&&(v.limit as number)>0&&count(v.total)}

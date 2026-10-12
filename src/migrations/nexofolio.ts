@@ -46,12 +46,14 @@ async function resetOnce() {
       })
     }
   }
-  if (permissions.origins?.length) {
-    const removed = await chrome.permissions.remove({ origins: permissions.origins })
+  const optionalOrigins = (permissions.origins || []).filter(origin => origin !== 'https://asynctest.oss-cn-shenzhen.aliyuncs.com/*')
+  if (optionalOrigins.length) {
+    const removed = await chrome.permissions.remove({ origins: optionalOrigins })
     if (!removed) throw new Error('无法撤回插件旧域名权限，请重载扩展后重试。')
   }
   // Marker is written last. No manager is alive yet, and a failed reset never marks success.
-  await chrome.storage.local.clear()
+  const existing = await chrome.storage.local.get(null)
+  await chrome.storage.local.remove(Object.keys(existing).filter(key => !key.startsWith('nexofolio.update.')))
   await chrome.storage.local.set({ [RESET_MARKER]: { version: RESET_VERSION, completedAt: new Date().toISOString() } })
 }
 

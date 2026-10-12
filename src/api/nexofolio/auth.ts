@@ -2,11 +2,20 @@ import { ApiError, NexoFolioClient, object, isUuid } from './client'
 export interface UserProfile { id: string; username: string; displayName: string; avatarUrl: string }
 export type ProjectSync = { status: 'completed' | 'failed' | 'skipped' }
 export const AUTH_ENDPOINTS = { login: '/v1/auth/login', profile: '/v1/auth/me' } as const
+export function avatarFrom(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const source = value.trim()
+  // Profile uploads currently return a WebP data URL. Older responses may omit it.
+  if (/^data:image\/(?:webp|png|jpeg|gif);base64,/i.test(source)) return source
+  try {
+    const url = new URL(source)
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''
+  } catch { return '' }
+}
 export function profileFrom(value: unknown): UserProfile {
   const data = object(value)
   if (!isUuid(data.id) || typeof data.account !== 'string' || !data.account || typeof data.display_name !== 'string' || data.enabled !== true) throw new ApiError('protocol', '无法读取当前用户资料。')
-  // This API has no avatar field. Use the existing initials fallback, never invent an avatar endpoint.
-  return { id: data.id, username: data.account, displayName: data.display_name || data.account, avatarUrl: '' }
+  return { id: data.id, username: data.account, displayName: data.display_name || data.account, avatarUrl: avatarFrom(data.avatar_url) }
 }
 export async function login(serviceUrl: string, account: string, password: string) {
   const data = object(await new NexoFolioClient(serviceUrl).request(AUTH_ENDPOINTS.login, { method: 'POST', body: { account, password }, timeoutMs: 65000 }))

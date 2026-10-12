@@ -8,3 +8,7 @@
 - `FetcherMark.vue` and `ui/motion/fetcherMotion.ts` adapt the user-approved local `login-clear-spectrum-motion.html` preview and the same supplied Fetcher SVG geometry. Preview controls/captions are not included. The original SVG asset is unchanged.
 
 - Ingestion JSON Schema validators are compiled locally with AJV and ajv-formats; runtime helpers include fast-deep-equal. Their licenses are bundled in third-party-licenses.txt. The pinned schemas and fixtures come from the NexoFolio backend repository.
+
+## CodeMirror 6
+
+请求和响应编辑器使用 [CodeMirror](https://codemirror.net/) 的 state、view、commands、language、lang-json 和 search 模块及其运行时依赖，均在扩展内本地打包。许可证由构建脚本汇入 `public/third-party-licenses.txt`（MIT）。

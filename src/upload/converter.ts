@@ -8,9 +8,9 @@ export function interrupted(value: Observation): Observation {
   return { ...value, request: { ...value.request, body: value.request.body.state === 'reading' ? { ...value.request.body, state:'unreadable',message:'采集进程中断。' } : value.request.body }, response: ['pending','reading'].includes(value.response.state) ? { ...value.response,state:'unreadable',message:'采集进程中断。' } : value.response }
 }
 
-export function batchOf(destination: Destination, records: CollectRecord[], batchId: string = crypto.randomUUID()): CollectBatch {
+export function batchOf(destination: Destination, records: CollectRecord[], batchId: string = crypto.randomUUID(), platformVersion?: string): CollectBatch {
   return {
-    batch_id:batchId, platform:'nexofolio-fetcher', platform_version:chrome.runtime.getManifest().version,
+    batch_id:batchId, platform:'nexofolio-fetcher', ...(platformVersion ? { platform_version:platformVersion } : {}),
     target:{ project_id:destination.projectId, environment:destination.environment, ...(destination.site ? { site:destination.site } : {}) },
     records,
   }

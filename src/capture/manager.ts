@@ -1,3 +1,4 @@
+import { versionAllowed } from '../updates/access'
 import { object, isUuid } from '../api/nexofolio/client'
 import { AUTH_STORAGE_PREFIX, serviceOriginPattern } from '../auth/contracts'
 import { SERVICE_STORAGE_KEY } from '../settings/service'
@@ -14,10 +15,10 @@ import { installPageSampler } from '../evidence/pageSampler'
 import { validObservedTime, type EvidenceContext, type ContextSeed } from '../evidence/context'
 import { matchesPath } from '../platforms/scope'
 
-type Peer = { port: chrome.runtime.Port; windowId?: number; visible: boolean; detailId?: number }
+type Peer = { port: chrome.runtime.Port; windowId?: number; visible: boolean; detailId?: number; detailKey?: string }
 type Frame = { eventSequences: Map<string,number>; title?: string; seed: ContextSeed; reservations: string[]; id: number; documentId: string; nonce: string; url: string; port?: chrome.runtime.Port; installed: boolean }
 type RunningCapture = { destination: Destination; scope: CaptureScope; key: string; tabId: number; windowId: number; url: string; documentId: string; accepting: boolean; frames: Map<number, Frame>; refreshing: boolean }
-type RecordEntry = { context?: EvidenceContext; queueId: string; destination: Destination; sourcePage: string; savingTerminal?: boolean; request: CapturedInput; row: CapturedRequest; response: CapturedResponse; frame: Frame; requestId: string }
+type RecordEntry = { platformVersion: string; context?: EvidenceContext; queueId: string; destination: Destination; sourcePage: string; savingTerminal?: boolean; request: CapturedInput; row: CapturedRequest; response: CapturedResponse; frame: Frame; requestId: string }
 const emptyResponse = (): CapturedResponse => ({ state: 'pending', status: null, statusText: '', contentType: '', url: '', encoding: 'none', bytes: 0, message: '', body: '', headers: { entries: [], state: 'unreadable', message: '等待响应头。' } })
 
 // One rolling buffer across page changes; only adding the 21st record evicts the oldest.
@@ -42,7 +43,6 @@ export class CaptureManager {
   private status: CaptureSnapshot['status'] = 'idle'
   private message = ''
   private publishTimer: ReturnType<typeof setTimeout> | undefined
-  private checkTimer: ReturnType<typeof setInterval> | undefined
 
   constructor(private platforms: PlatformManager, private uploads: UploadManager) {
     uploads.onChange(() => { this.replenish(); this.publish() })
@@ -107,9 +107,13 @@ export class CaptureManager {
         this.reconcileSoon()
       }
     })
-    chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'nexofolio-capture') this.reconcileSoon() })
+    chrome.alarms.onAlarm.addListener(alarm => {
+      if (alarm.name === 'nexofolio-capture') {
+        this.platforms.revalidateBindings()
+        this.reconcileSoon()
+      }
+    })
     void chrome.alarms.create('nexofolio-capture', { periodInMinutes: .5 })
-    this.checkTimer = setInterval(() => this.reconcileSoon(), 30000)
     this.reconcileSoon()
     chrome.permissions.onRemoved.addListener(() => { this.detach(); this.reconcileSoon() })
     chrome.storage.onChanged.addListener((changes, area) => {
@@ -141,9 +145,10 @@ export class CaptureManager {
       } else if (message.type === 'visibility' && peer.visible !== (message.visible === true)) {
         peer.visible = message.visible === true
         this.publish()
-      } else if (message.type === 'retry') { this.detach(); this.reconcileSoon() }
+      } else if (message.type === 'retry') { this.platforms.revalidateBindings(); this.detach(); this.reconcileSoon() }
       else if (message.type === 'detail') {
         peer.detailId = Number.isSafeInteger(message.id) ? Number(message.id) : undefined
+        peer.detailKey = typeof message.recordKey === 'string' ? message.recordKey : undefined
         this.sendDetail(peer)
       }
       // Heartbeats keep the MV3 worker alive; revalidation has its own 30-second cadence.
@@ -156,7 +161,22 @@ export class CaptureManager {
     this.publish()
   }
 
+  versionChanged() {
+    if (versionAllowed()) { this.reconcileSoon(); return }
+    ++this.generation
+    const runs = new Set([...this.retired, ...(this.active ? [this.active] : [])])
+    this.active = null
+    for (const run of runs) {
+      run.accepting = false
+      clearTimeout(this.retireTimers.get(run))
+      for (const frame of run.frames.values()) { this.stopFrame(run, frame); this.finishFrame(frame) }
+    }
+    this.retired.clear(); this.retireTimers.clear()
+    this.setStatus('stopped', '版本校验未通过，监听已暂停，已有内容保留。')
+  }
+
   connectRelay(port: chrome.runtime.Port) {
+    if (!versionAllowed()) { port.disconnect(); return }
     const sender = port.sender, run = this.active
     const frame = run?.frames.get(sender?.frameId ?? -1)
     if (!run?.accepting || !frame || sender?.id !== chrome.runtime.id || sender.tab?.id !== run.tabId || sender.documentId !== frame.documentId) { port.disconnect(); return }
@@ -213,8 +233,15 @@ export class CaptureManager {
   private setStatus(status: CaptureSnapshot['status'], message: string) { this.status = status; this.message = message; this.publish() }
   private sendDetail(peer: Peer) {
     if (peer.detailId === undefined) return
-    const entry = this.entries.find(entry => entry.row.id === peer.detailId && this.visibleEntry(entry))
-    this.send(peer.port, { kind: 'detail', id: peer.detailId, request: entry?.request || null, response: entry?.response || null } satisfies CaptureDetail)
+    const record = this.readRecord(peer.detailId, peer.detailKey || '')
+    this.send(peer.port, record?.detail ?? { kind: 'detail', id: peer.detailId, recordKey: peer.detailKey || '', request: null, response: null, source: null } satisfies CaptureDetail)
+  }
+  readRecord(id: number, recordKey: string) {
+    const entry = this.entries.find(entry => entry.row.id === id && entry.queueId === recordKey && this.visibleEntry(entry))
+    if (!entry) return null
+    // A detached copy, and an immutable queue UUID, prevent draft mutation and ID reuse after restart.
+    return structuredClone({ row: entry.row, detail: { kind: 'detail' as const, id, recordKey, request: entry.request, response: entry.response,
+      source: { destination: entry.destination, pageUrl: entry.sourcePage } } })
   }
   private visibleEntry(entry:RecordEntry) { return this.displayOwner === JSON.stringify([entry.destination.serviceUrl, entry.destination.userId]) }
   private publish() {
@@ -256,7 +283,7 @@ export class CaptureManager {
       }
     })
   }
-  private current(generation: number) { return generation === this.generation }
+  private current(generation: number) { return versionAllowed() && generation === this.generation }
   private stopFrame(run: RunningCapture, frame: Frame) {
     const port = frame.port
     frame.port = undefined; frame.installed = false
@@ -285,6 +312,7 @@ export class CaptureManager {
     this.retireTimers.set(run,timer)
   }
   private async reconcile(generation: number) {
+    if (!versionAllowed()) { this.versionChanged(); return }
     await this.identity.ready
     if (!this.current(generation)) return
     if (this.active && !this.active.accepting) this.detach()
@@ -334,11 +362,11 @@ export class CaptureManager {
     }
   }
   private async refreshFrames(run: RunningCapture) {
-    if (run.refreshing || this.active !== run || !run.accepting) return
+    if (run.refreshing || !versionAllowed() || this.active !== run || !run.accepting) return
     run.refreshing = true
     try {
       const frames = await chrome.webNavigation.getAllFrames({ tabId: run.tabId })
-      if (this.active !== run || !run.accepting) return
+      if (!versionAllowed() || this.active !== run || !run.accepting) return
       const main = frames?.find(frame => frame.frameId === 0)
       if (main?.documentId !== run.documentId || !this.inScope(main.url, run.scope)) { this.reconcileSoon(true); return }
       let partial = false
@@ -348,16 +376,16 @@ export class CaptureManager {
         }
       }
       for (const info of [...(frames || [])].sort((a,b) => a.frameId === 0 ? -1 : b.frameId === 0 ? 1 : a.frameId - b.frameId)) {
-        if (this.active !== run || !run.accepting) return
+        if (!versionAllowed() || this.active !== run || !run.accepting) return
         const previous = run.frames.get(info.frameId)
         if (previous?.documentId === info.documentId && (previous.url === info.url || info.frameId === 0 && this.inScope(info.url, run.scope)) && previous.installed) continue
         if (previous) { this.stopFrame(run, previous); this.finishFrame(previous); run.frames.delete(info.frameId) }
         if (!info.documentId || !/^https?:\/\//i.test(info.url)) { partial = true; continue }
         const permitted = await chrome.permissions.contains({ origins: [serviceOriginPattern(info.url)] })
-        if (this.active !== run || !run.accepting) return
+        if (!versionAllowed() || this.active !== run || !run.accepting) return
         if (!permitted || (info.frameId === 0 && !this.inScope(info.url, run.scope))) { partial = true; continue }
         const frame: Frame = { eventSequences: new Map(), seed: await this.identity.seed(run.documentId, info.documentId), reservations: [], id: info.frameId, documentId: info.documentId, nonce: crypto.randomUUID(), url: info.url, installed: false }
-        if (this.active !== run || !run.accepting) return
+        if (!versionAllowed() || this.active !== run || !run.accepting) return
         for (let i = 0; i < 2; i++) { const id = this.uploads.reserve(); if (id) frame.reservations.push(id) }
         if (!frame.reservations.length) { partial = true; continue }
         run.frames.set(frame.id, frame)
@@ -365,16 +393,19 @@ export class CaptureManager {
         const options: PageCaptureOptions = { contextSeed: frame.seed, credits: frame.reservations.length, scope: frame.id === 0 ? run.scope : undefined, nonce: frame.nonce, url: frame.url, maxBytes: BODY_LIMIT, maxRows: CAPTURE_LIMIT, bodyTimeout: BODY_TIMEOUT, requestTimeout: 30000, leaseMs: 15000, relayPort: PAGE_RELAY_PORT }
         try {
           const relay = await chrome.scripting.executeScript({ target, world: 'ISOLATED', func: installPageRelay, args: [options] })
-          if (this.active !== run || !run.accepting) { this.stopFrame(run, frame); return }
+          if (!versionAllowed() || this.active !== run || !run.accepting) { this.stopFrame(run, frame); return }
           if (!relay[0]?.result || !frame.port) throw new Error('Relay unavailable')
           const injected = await chrome.scripting.executeScript({ target, world: 'MAIN', func: installPageCapture, args: [options] })
-          if (this.active !== run || !run.accepting) { this.stopFrame(run, frame); return }
+          if (!versionAllowed() || this.active !== run || !run.accepting) { this.stopFrame(run, frame); return }
           const result = injected[0]?.result
           frame.installed = !!(result?.fetch || result?.xhr)
           if (!result?.fetch || !result?.xhr) partial = true
           if (!frame.installed) this.stopFrame(run, frame)
           // The sampler only supplies the page title and interaction ids; capture works without it.
-          else await chrome.scripting.executeScript({ target, world: 'MAIN', func: installPageSampler, args: [{nonce:frame.nonce}] }).catch(() => [])
+          else {
+            await chrome.scripting.executeScript({ target, world: 'MAIN', func: installPageSampler, args: [{nonce:frame.nonce}] }).catch(() => [])
+            if (!versionAllowed() || this.active !== run || !run.accepting) { this.stopFrame(run, frame); return }
+          }
         } catch { this.stopFrame(run, frame); partial = true }
       }
       if (this.active === run && run.accepting && run.frames.get(0)?.installed) this.setStatus('listening', partial ? '正在采集响应；部分页面框架未覆盖。' : '正在采集 XHR / fetch 响应')
@@ -406,7 +437,7 @@ export class CaptureManager {
     frame.title=String(object(sample.data).title||'').slice(0,1024)
   }
   private observation(entry: RecordEntry): Observation {
-    return { context: entry.context, title: entry.frame.title, request: entry.request, response: entry.response, method: entry.row.method, time: entry.row.time, sourcePage: entry.sourcePage, transport: entry.row.type === 'XHR' ? 'xhr' : 'fetch', frame: entry.row.frame }
+    return { platformVersion: entry.platformVersion, context: entry.context, title: entry.frame.title, request: entry.request, response: entry.response, method: entry.row.method, time: entry.row.time, sourcePage: entry.sourcePage, transport: entry.row.type === 'XHR' ? 'xhr' : 'fetch', frame: entry.row.frame }
   }
   private persist(entry: RecordEntry) {
     const terminal = entry.request.body.state !== 'reading' && !['pending','reading'].includes(entry.response.state)
@@ -424,7 +455,7 @@ export class CaptureManager {
   private replenish() {
     for (const [id, entry] of this.inflight) if (entry.savingTerminal && this.uploads.terminalStored(id)) this.inflight.delete(id)
     const run = this.active
-    if (!run?.accepting) return
+    if (!versionAllowed() || !run?.accepting) return
     for (const frame of run.frames.values()) {
       if (!frame.installed || !frame.port) continue
       let count = 0
@@ -451,6 +482,7 @@ export class CaptureManager {
     this.publish()
   }
   private receive(frame: Frame, message: Record<string, unknown>, run: RunningCapture) {
+    if (!versionAllowed()) return
     if (typeof message.requestId !== 'string' || !/^\d{1,16}$/.test(message.requestId)) return
     if (message.kind === 'request') {
       if (typeof message.url !== 'string' || message.url.length > 16384 || !/^https?:\/\//i.test(message.url)
@@ -462,8 +494,8 @@ export class CaptureManager {
       if (!context || !validObservedTime(context.request_started_at_ms)) return
       const response = emptyResponse(), { body, headers, ...summary } = response
       const queueId = frame.reservations.shift()
-      if (!queueId || this.active !== run || !run.accepting) return
-      const entry: RecordEntry = { context, queueId, destination: structuredClone(run.destination), sourcePage: context.page_url, request, row: { id: ++this.sequence, url: message.url, method: message.method, type: message.type as 'XHR' | 'Fetch', time: context.request_started_at_ms, frame: frame.id === 0 ? 'page' : 'iframe', response: summary, revision: 0 }, response, frame, requestId: message.requestId }
+      if (!queueId || !versionAllowed() || this.active !== run || !run.accepting) return
+      const entry: RecordEntry = { platformVersion: chrome.runtime.getManifest().version, context, queueId, destination: structuredClone(run.destination), sourcePage: context.page_url, request, row: { id: ++this.sequence, recordKey: queueId, url: message.url, method: message.method, type: message.type as 'XHR' | 'Fetch', time: context.request_started_at_ms, frame: frame.id === 0 ? 'page' : 'iframe', response: summary, revision: 0 }, response, frame, requestId: message.requestId }
       this.inflight.set(queueId, entry)
       this.entries.unshift(entry)
       this.persist(entry)

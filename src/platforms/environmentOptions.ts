@@ -26,7 +26,7 @@ export function useEnvironmentOptions(
       const selected = result.items.find(item => item.id === environmentId.value)
       if (selected) environmentName.value = selected.name
     } catch {
-      if (!disposed && request === revision) error.value = '环境列表暂不可用，可重试或手填环境名称。'
+      if (!disposed && request === revision) error.value = '环境列表暂不可用，请重新读取后选择或创建。'
     } finally { if (!disposed && request === revision) loading.value = false }
   }
   watch(projectId, () => { reset(); void load() }, { flush: 'sync', immediate: true })

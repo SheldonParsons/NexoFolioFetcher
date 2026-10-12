@@ -1,5 +1,6 @@
 export interface CapturedRequest {
   id: number
+  recordKey: string
   url: string
   method: string
   type: 'XHR' | 'Fetch'
@@ -24,7 +25,12 @@ export interface CapturedHeaders { entries: [string, string][]; state: 'page-vis
 export interface CapturedBody { state: 'none' | 'reading' | 'complete' | 'truncated' | 'unreadable' | 'timeout'; encoding: 'text' | 'base64' | 'none'; body: string; bytes: number; contentType: string; message: string }
 export interface CapturedInput { url: string; urlTruncated: boolean; headers: CapturedHeaders; body: CapturedBody }
 export interface CapturedResponse extends ResponseSummary { body: string; headers: CapturedHeaders }
-export interface CaptureDetail { kind: 'detail'; id: number; request: CapturedInput | null; response: CapturedResponse | null }
+export interface CaptureDetail {
+  kind: 'detail'; id: number; recordKey: string
+  request: CapturedInput | null; response: CapturedResponse | null
+  source: { destination: import('../upload/contracts').Destination; pageUrl: string } | null
+}
+export interface CaptureRecord { row: CapturedRequest; detail: CaptureDetail }
 export interface CaptureSnapshot {
   status: 'idle' | 'checking' | 'listening' | 'stopped' | 'interrupted' | 'error'
   message: string

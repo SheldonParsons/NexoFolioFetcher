@@ -1,4 +1,4 @@
-import type { ProjectSync, UserProfile } from '../api/nexofolio/auth'
+import { avatarFrom, type ProjectSync, type UserProfile } from '../api/nexofolio/auth'
 import { isUuid } from '../api/nexofolio/client'
 import { AUTH_STORAGE_PREFIX, type RememberedCredentials } from './contracts'
 export interface StoredSession { id: string; serviceUrl: string; token: string; user: UserProfile; expiresAt: string; projectSync: ProjectSync }
@@ -8,7 +8,7 @@ export async function readSession(url: string): Promise<StoredSession | null> {
   if (!value || value.serviceUrl !== url || !isUuid(value.id) || typeof value.token !== 'string' || !value.token.startsWith('nfi_')
       || !value.user || !isUuid(value.user.id) || typeof value.user.username !== 'string' || typeof value.user.displayName !== 'string'
       || typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt)) || !['completed','failed','skipped'].includes(value.projectSync?.status)) return null
-  return value
+  return { ...value, user: { ...value.user, avatarUrl: avatarFrom(value.user.avatarUrl) } }
 }
 export const writeSession = (session: StoredSession) => chrome.storage.local.set({ [sessionKey(session.serviceUrl)]: session })
 export const removeSession = (url: string) => chrome.storage.local.remove(sessionKey(url))

@@ -10,7 +10,15 @@ for (const size of [16, 32, 48, 128]) {
     .toFile(new URL(`../public/icons/${size}.png`, import.meta.url).pathname)
 }
 
-const licenses = await Promise.all(['vue', 'reka-ui', 'morphicons', 'lucide', 'ajv', 'ajv-formats', 'fast-deep-equal'].map(async (name) => {
+const packages = new Set(['vue', 'reka-ui', 'morphicons', 'lucide', 'ajv', 'ajv-formats', 'fast-deep-equal'])
+async function includeEditorPackage(name) {
+  if (packages.has(name)) return
+  packages.add(name)
+  const info = JSON.parse(await readFile(new URL(`../node_modules/${name}/package.json`, import.meta.url), 'utf8'))
+  for (const dependency of Object.keys(info.dependencies || {})) await includeEditorPackage(dependency)
+}
+for (const name of ['state', 'view', 'commands', 'language', 'lang-json', 'search']) await includeEditorPackage(`@codemirror/${name}`)
+const licenses = await Promise.all([...packages].map(async (name) => {
   const license = await readFile(new URL(`../node_modules/${name}/LICENSE`, import.meta.url), 'utf8')
   return `${name}\n${license}`
 }))
