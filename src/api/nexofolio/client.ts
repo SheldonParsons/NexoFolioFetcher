@@ -1,4 +1,5 @@
 import { requireVersionAccess, rejectRuntimeVersion, UpdateGateError } from '../../updates/access'
+import { retryAfterMs } from './retry'
 // NexoFolio is the only backend. No ZenTao calls or credential forwarding to other origins.
 export type ApiErrorKind = 'auth' | 'network' | 'server' | 'protocol' | 'permission' | 'input' | 'stale' | 'update'
 export class ApiError extends Error {
@@ -11,7 +12,7 @@ export const isUuid = (value: unknown): value is string => typeof value === 'str
 export const isAuthFailure = (status: number) => status === 401
 export class NexoFolioClient {
   constructor(private baseUrl: string, private token?: string) {}
-  async request(path: string, options: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown; timeoutMs?: number; runtimeVersion?: boolean } = {}): Promise<unknown> {
+  async request(path: string, options: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown; timeoutMs?: number; runtimeVersion?: boolean; clientId?: string; signal?: AbortSignal } = {}): Promise<unknown> {
     if (!path.startsWith('/v1/') || path.split('?')[0]?.split('/').includes('..')) throw new ApiError('input', '无效的接口路径。')
     requireVersionAccess()
     const controller = new AbortController()
@@ -19,15 +20,16 @@ export class NexoFolioClient {
     try {
       const response = await fetch(this.baseUrl.replace(/\/+$/, '') + path, {
         method: options.method ?? 'GET',
-        headers: { ...(options.runtimeVersion ? { 'X-NexoFolio-Fetcher-Version': chrome.runtime.getManifest().version } : {}), Accept: 'application/json', ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
+        headers: { ...(options.runtimeVersion ? { 'X-NexoFolio-Fetcher-Version': chrome.runtime.getManifest().version } : {}), ...(options.clientId ? { 'X-NexoFolio-Client-Id': options.clientId } : {}), Accept: 'application/json', ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
-        credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal,
+        credentials: 'omit', redirect: 'error', cache: 'no-store', signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
       })
       let payload: unknown
       try { payload = await response.json() } catch { payload = undefined }
+      if (options.signal?.aborted) throw new ApiError('stale', '登录状态已变化，原队列保留。')
       if (controller.signal.aborted) throw new ApiError('network', '连接超时，请稍后重试。')
       const envelope = object(payload), code = String(object(envelope.error).code ?? envelope.code ?? '')
-      if (code === 'FETCHER_UPDATE_REQUIRED' || code === 'FETCHER_UPDATE_POLICY_UNAVAILABLE') { rejectRuntimeVersion(); throw new ApiError('update', '版本策略未通过，采集和上传暂停，原队列保留。', response.status, code) }
+      if (code === 'FETCHER_UPDATE_REQUIRED' || code === 'FETCHER_UPDATE_POLICY_UNAVAILABLE') { rejectRuntimeVersion(); throw new ApiError('update', '版本策略未通过，采集和上传暂停，原队列保留。', response.status, code, retryAfterMs(response.headers.get('Retry-After'))) }
       if (isAuthFailure(response.status)) throw new ApiError(path === '/v1/auth/login' ? 'input' : 'auth', path === '/v1/auth/login' ? '账号或密码错误，或账号已停用。' : '登录已失效，请重新登录。', 401, code)
       if (!response.ok) {
         const message = response.status === 403 ? '你没有权限进入或绑定此项目。'
@@ -36,15 +38,13 @@ export class NexoFolioClient {
           : response.status === 429 ? '服务繁忙，请稍后重试。'
           : response.status === 400 ? '请求参数有误，请检查账号及服务配置。'
           : 'NexoFolio 服务暂时不可用，请稍后重试。'
-        const retry = response.headers.get('Retry-After')
-        const seconds = retry !== null ? Number(retry) : NaN
-        const retryAfterMs = retry === null ? undefined : Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retry) - Date.now())
-        throw new ApiError(response.status === 403 ? 'permission' : 'server', message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined)
+        throw new ApiError(response.status === 403 ? 'permission' : 'server', message, response.status, code, retryAfterMs(response.headers.get('Retry-After')))
       }
       if (response.status === 204) return null
       if (payload === undefined) throw new ApiError('protocol', '服务返回了无法识别的内容，请检查 NexoFolio 服务地址。', response.status)
       return payload
     } catch (error) {
+      if (options.signal?.aborted) throw new ApiError('stale', '登录状态已变化，原队列保留。')
       if (error instanceof ApiError || error instanceof UpdateGateError) throw error
       throw new ApiError('network', controller.signal.aborted ? '连接超时，请稍后重试。' : '无法连接 NexoFolio，请检查网络与服务地址。')
     } finally { clearTimeout(timer) }

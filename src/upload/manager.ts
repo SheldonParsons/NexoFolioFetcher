@@ -1,11 +1,13 @@
 import { versionAllowed } from '../updates/access'
 import { ApiError } from '../api/nexofolio/client'
+import { retryDelay } from '../api/nexofolio/retry'
+import type { AuthManager } from '../auth/manager'
 import { submitBatch } from '../api/nexofolio/collect'
 import { QueueStore } from './store'
 import { batchOf, convert, interrupted, recordFailure, rejections, terminal } from './converter'
 import { groupKey, encodedSize, BATCH_TARGET_BYTES, MAX_QUEUE_BYTES, MAX_QUEUE_ITEMS, MAX_RECORDS, RESERVATION_BYTES, type Destination, type Observation, type QueueBatch, type QueueItem, type QueueStatus, type ObservationUploadState, rejectionReason } from './contracts'
 
-// Uploading is decoupled from login: every item carries its own destination and collect needs no token.
+// Collect needs no token; local identity still fences every frozen destination.
 export class UploadManager {
   private store=new QueueStore()
   private items=new Map<string,QueueItem>()
@@ -26,9 +28,12 @@ export class UploadManager {
   private storageFailed=false
   private listeners=new Set<()=>void>()
   private dirty=new Map<string,QueueItem>()
+  private deferredWrites=new Map<string,QueueBatch>()
   private timer?:ReturnType<typeof setTimeout>
+  private timerAt=0
   readonly ready:Promise<void>
-  constructor(){
+  constructor(private auth: AuthManager){
+    chrome.storage.onChanged.addListener((_changes, area)=>{if(area==='local')this.wake()})
     chrome.alarms?.onAlarm.addListener(alarm=>{if(alarm.name==='nexofolio-upload')this.wake()})
     void chrome.alarms?.create('nexofolio-upload',{periodInMinutes:0.5})
     this.ready=this.restore();void this.ready.catch(()=>{this.storageFailed=true;this.message='上传队列无法读取，已暂停新增采集。';this.notify()})}
@@ -103,10 +108,19 @@ export class UploadManager {
   }
   wake(){
     if(!versionAllowed())return
-    const ready=[...this.items.values()].filter(item=>item.state==='ready')
+    const now=Date.now(), deadlines=this.deadlines()
+    const ready=[...this.items.values()].filter(item=>item.state==='ready'&&(deadlines.get(item.destination.serviceUrl)||0)<=now)
     const urgent=ready.length>=MAX_RECORDS||ready.reduce((sum,item)=>sum+item.size,0)>=4*1024*1024
-    if(urgent&&this.timer){clearTimeout(this.timer);this.timer=undefined}
-    if(!this.timer)this.timer=setTimeout(()=>{this.timer=undefined;void this.flush()},urgent?0:1000)
+    const next=Math.min(...[...this.batches.values()].filter(b=>b.wire&&'platform' in b.wire).map(b=>Math.max(b.nextAttempt,deadlines.get(b.destination.serviceUrl)||0)))
+    const delay=this.dirty.size||this.deferredWrites.size||ready.length?urgent?0:1000:Math.max(1000,next-now)
+    if(!Number.isFinite(delay)||(this.timer&&this.timerAt<=now+delay))return
+    clearTimeout(this.timer);this.timerAt=now+Math.min(delay,2147483647)
+    this.timer=setTimeout(()=>{this.timer=undefined;void this.flush()},Math.min(delay,2147483647))
+  }
+  private deadlines(){
+    const result=new Map<string,number>()
+    for(const batch of this.batches.values())result.set(batch.destination.serviceUrl,Math.max(result.get(batch.destination.serviceUrl)||0,batch.nextAttempt))
+    return result
   }
   // Items of a batch go back to their own state in one write; the batch row goes with them.
   private async settle(active:QueueBatch,updates:QueueItem[],deletes:string[]=[],batches:QueueBatch[]=[]){
@@ -124,22 +138,32 @@ export class UploadManager {
     return {id:wire.batch_id,destination:active.destination,itemIds:ids,wire,attempts:0,nextAttempt:0}
   }
   private failAll(active:QueueBatch,failure:string){return this.settle(active,active.itemIds.map(id=>({...this.items.get(id)!,state:'failed' as const,failure})))}
+  private async defer(active:QueueBatch,error:unknown){
+    const attempts=active.attempts+1,delay=retryDelay(attempts,error instanceof ApiError?error.retryAfterMs:undefined)
+    const deferred={...active,attempts,nextAttempt:Date.now()+delay}
+    this.batches.set(deferred.id,deferred);this.deferredWrites.set(deferred.id,deferred)
+    try {await this.store.write({batches:[deferred]});this.deferredWrites.delete(deferred.id)}
+    catch {this.storageFailed=true;throw new Error('QUEUE_STORAGE_UNAVAILABLE')}
+  }
   private async flush(){
     if(this.running)return
     this.running=true
+    let attempted=false
     try {
       await this.ready
-      if(this.dirty.size){await this.exclusive(async()=>{await this.store.write({items:[...this.dirty.values()]});this.dirty.clear();this.storageFailed=false})}
+      if(this.dirty.size||this.deferredWrites.size){await this.exclusive(async()=>{await this.store.write({items:[...this.dirty.values()],batches:[...this.deferredWrites.values()]});this.dirty.clear();this.deferredWrites.clear();this.storageFailed=false})}
       if (!versionAllowed() || !this.transportEnabled) { this.message='上传服务初始化中，队列保留。'; return }
-      let batch=[...this.batches.values()].find(b=>b.wire && 'platform' in b.wire && b.nextAttempt<=Date.now())
+      const state=await this.auth.snapshot(),now=Date.now(),deadlines=this.deadlines()
+      const eligible=(d:Destination)=>state.status==='authenticated'&&state.service?.url===d.serviceUrl&&state.user?.id===d.userId&&(deadlines.get(d.serviceUrl)||0)<=now
+      let batch=[...this.batches.values()].find(b=>b.wire && 'platform' in b.wire && eligible(b.destination)&&b.nextAttempt<=now)
       if(!batch)batch=await this.exclusive(async()=>{
         if(!versionAllowed())return undefined
-        const first=[...this.items.values()].find(i=>i.format==='collect-v1'&&i.state==='ready')
+        const first=[...this.items.values()].find(i=>i.format==='collect-v1'&&i.state==='ready'&&eligible(i.destination))
         if(!first)return undefined
         const selected:QueueItem[]=[]
         let bytes=0
         for(const item of this.items.values()){
-          if(item.format!=='collect-v1'||item.platformVersion!==first.platformVersion||item.state!=='ready'||groupKey(item.destination)!==groupKey(first.destination))continue
+          if(item.format!=='collect-v1'||item.destination.userId!==first.destination.userId||item.platformVersion!==first.platformVersion||item.state!=='ready'||groupKey(item.destination)!==groupKey(first.destination))continue
           const size=encodedSize(item.record)
           if(selected.length&&(selected.length>=MAX_RECORDS||bytes+size>BATCH_TARGET_BYTES))break
           selected.push(item);bytes+=size
@@ -151,14 +175,20 @@ export class UploadManager {
         for(const item of updates)this.items.set(item.id,item)
         this.batches.set(created.id,created);return created
       })
-      if(!batch){this.message=[...this.items.values()].some(item=>item.format!=='collect-v1')?'旧格式队列原样保留，未自动转换或上传。':this.items.size?'失败记录已保留，其余已全部交给接收服务。':'已全部交给接收服务。';return}
+      if(!batch){this.message=this.items.size?'原队列保留，等待重试时间或对应服务与账号就绪。':'已全部交给接收服务。';return}
       if(!versionAllowed())return
       const active=batch
+      attempted=true
       try {
         for(const id of active.itemIds)this.sending.add(id)
         this.notify()
         // A retry sends the stored wire unchanged, so the batch id is reused and the server counts it once.
-        const rejected=rejections(await submitBatch(active.destination.serviceUrl,active.wire),active.wire)
+        const receipt=await this.auth.withSession(async access=>{
+          if(access.service.url!==active.destination.serviceUrl||access.userId!==active.destination.userId)throw new ApiError('stale','上传身份已变化。')
+          access.assertCurrent()
+          return submitBatch(active.destination.serviceUrl,active.wire,this.producer,access.signal)
+        })
+        const rejected=rejections(receipt,active.wire)
         const updates:QueueItem[]=[],deletes:string[]=[]
         active.itemIds.forEach((id,index)=>{
           const reason=rejected.get(index)
@@ -170,6 +200,7 @@ export class UploadManager {
       } catch(error){
         const status=error instanceof ApiError?error.status:undefined, code=error instanceof ApiError?error.code:''
         if(error instanceof ApiError && error.kind==='update'){
+          await this.defer(active,error)
           this.message='运行版本未获准上传，原批次与记录保留，等待 OSS 校验恢复。'
         } else if(status===413){
           if(active.itemIds.length===1)await this.failAll(active,'RECORD_TOO_LARGE')
@@ -189,13 +220,11 @@ export class UploadManager {
           await this.settle(active,[],[],[this.rebatch(active,active.itemIds)])
           this.message='批次编号冲突，已换新编号重发。'
         } else {
-          const attempts=active.attempts+1,delay=Math.max(error instanceof ApiError?error.retryAfterMs||0:0,Math.min(60000,1000*2**Math.min(attempts,6)))
-          const deferred={...active,attempts,nextAttempt:Date.now()+Math.min(delay,60000)}
-          await this.store.write({batches:[deferred]});this.batches.set(deferred.id,deferred)
+          await this.defer(active,error)
           this.message=status===429||status===503?'接收服务繁忙，原批次保留，稍后重试。':'上传未确认，原批次和记录保留，稍后重试。'
         }
       }
     } catch {this.message=this.storageFailed?'队列存储失败，新增采集已暂停。':'上传服务暂未就绪，队列保留。'}
-    finally {this.sending.clear();this.running=false;this.notify();if(versionAllowed()&&(this.items.size||this.dirty.size)){clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=undefined;void this.flush()},1000)}}
+    finally {this.sending.clear();this.running=false;this.notify();if(attempted)this.wake()}
   }
 }

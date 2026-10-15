@@ -34,7 +34,7 @@ export default defineBackground(() => {
   const storageReady = initializeNexoFolio().then(async () => {
     auth = new AuthManager()
     platforms = new PlatformManager(auth)
-    const uploads = new UploadManager()
+    const uploads = new UploadManager(auth)
     updates.onChange(() => { uploads.versionChanged(); capture?.versionChanged(); replay?.versionChanged() })
     replay = new ReplayManager(auth, platforms, (id, recordKey) => capture?.readRecord(id, recordKey) || null)
     const queueReady = await uploads.ready.then(() => true, () => false)

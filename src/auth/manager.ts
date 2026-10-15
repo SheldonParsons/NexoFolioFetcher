@@ -7,13 +7,20 @@ import { readSession, removeSession, writeSession, readCredentials, writeCredent
 // 后台唯一会话所有者。页面只收到资料与状态，永远不收到 token。
 export class AuthManager {
   private generation = 0
+  private invalidated = new AbortController()
+  private invalidate() {
+    this.invalidated.abort()
+    this.invalidated = new AbortController()
+    return ++this.generation
+  }
   private writes: Promise<unknown> = Promise.resolve()
   private checks = new Map<string, Promise<AuthState>>()
   private credentialEdits = new Map<string, number>()
   private verified = new Map<string, { at: number; state: AuthState }>()
 
-  async withSession<T>(action: (access: { service: ServiceConfig; userId: string; sessionId: string; token: string; assertCurrent: () => void }) => Promise<T>): Promise<T> {
+  async withSession<T>(action: (access: { service: ServiceConfig; userId: string; sessionId: string; token: string; signal: AbortSignal; assertCurrent: () => void }) => Promise<T>): Promise<T> {
     const generation = this.generation
+    const signal = this.invalidated.signal
     const state = await this.snapshot()
     this.ensureCurrent(generation)
     if (!state.service || !state.user || state.status !== 'authenticated') throw new ApiError('auth', '请先验证 NexoFolio 登录状态。')
@@ -21,7 +28,7 @@ export class AuthManager {
     if (!session || session.id !== state.sessionId) throw new ApiError('stale', '登录状态已变化，请重试。')
     this.ensureCurrent(generation)
     try {
-      const result = await action({ service: state.service, userId: state.user.id, sessionId: session.id, token: session.token, assertCurrent: () => this.ensureCurrent(generation) })
+      const result = await action({ service: state.service, userId: state.user.id, sessionId: session.id, token: session.token, signal, assertCurrent: () => this.ensureCurrent(generation) })
       this.ensureCurrent(generation)
       return result
     } catch (error) {
@@ -81,6 +88,7 @@ export class AuthManager {
       if ((await readSession(service.url))?.id === session.id) await removeSession(service.url)
     })
     this.verified.delete(session.id)
+    this.invalidate()
     return { service, user: null, sessionId: null, status: 'anonymous', reason: 'expired', message: '登录已失效，请重新登录。' }
   }
 
@@ -109,7 +117,7 @@ export class AuthManager {
   async login(serviceUrl: string, account: string, password: string, remember = false): Promise<AuthState> {
     const encoder = new TextEncoder()
     if (!account.trim() || encoder.encode(account.trim()).length > 128 || !password || encoder.encode(password).length > 1024) throw new ApiError('input', '请输入有效的账号和密码（账号最多128字节，密码最多1024字节）。')
-    const generation = ++this.generation
+    const generation = this.invalidate()
     const service = await this.service(serviceUrl)
     if (!await this.allowed(service.url)) throw new ApiError('permission', '请允许插件访问此 NexoFolio 服务。')
     this.ensureCurrent(generation)
@@ -132,7 +140,7 @@ export class AuthManager {
   }
 
   async logout(serviceUrl: string, sessionId: string): Promise<AuthState> {
-    const generation = ++this.generation
+    const generation = this.invalidate()
     return this.write(async () => {
       this.ensureCurrent(generation)
       const service = await this.service(serviceUrl)
@@ -145,7 +153,7 @@ export class AuthManager {
   }
 
   async configure(config: ServiceConfig): Promise<AuthState> {
-    const generation = ++this.generation
+    const generation = this.invalidate()
     await this.write(async () => { this.ensureCurrent(generation); await saveService(config) })
     // 按完整基础地址隔离并保留各服务登录态；换名称不会导致退出。
     return this.snapshot()
